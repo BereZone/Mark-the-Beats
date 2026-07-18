@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Beat Marker</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #2b2b2b;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+      padding: 12px;
+    }
+
+    .panel { display: flex; flex-direction: column; gap: 10px; }
+
+    h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e0e0e0;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #555;
+    }
+
+    .field-group { display: flex; flex-direction: column; gap: 4px; }
+
+    label {
+      color: #999;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    select, input[type="number"], input[type="text"] {
+      background: #383838;
+      border: 1px solid #555;
+      border-radius: 4px;
+      color: #e0e0e0;
+      font-size: 12px;
+      padding: 5px 8px;
+      width: 100%;
+      outline: none;
+    }
+
+    select:focus, input:focus { border-color: #4a9ef7; }
+
+    .detect-btn {
+      background: #4a9ef7;
+      border: none;
+      border-radius: 4px;
+      color: #fff;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 8px 12px;
+      width: 100%;
+    }
+
+    .detect-btn:hover { background: #6abaff; }
+    .detect-btn:disabled { background: #383838; color: #999; cursor: not-allowed; }
+
+    .status-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+
+    .status-header span { color: #999; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+    .clear-btn {
+      background: none;
+      border: none;
+      color: #999;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 4px;
+    }
+
+    .clear-btn:hover { color: #e0e0e0; }
+
+    #statusLog {
+      background: #383838;
+      border: 1px solid #555;
+      border-radius: 4px;
+      min-height: 120px;
+      max-height: 300px;
+      overflow-y: auto;
+      padding: 8px;
+      font-size: 11px;
+      line-height: 1.6;
+      font-family: "SF Mono", "Consolas", monospace;
+      color: #e0e0e0;
+      user-select: text;
+      -webkit-user-select: text;
+      cursor: text;
+    }
+
+    .log-idle    { color: #999; }
+    .log-info    { color: #e0e0e0; }
+    .log-success { color: #70d080; }
+    .log-error   { color: #f07070; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h2>Beat Marker</h2>
+
+    <div class="field-group">
+      <label for="nthBeat">Place marker every</label>
+      <select id="nthBeat">
+        <option value="1">Every beat (1×)</option>
+        <option value="2">Every 2nd beat</option>
+        <option value="4">Every 4th beat</option>
+        <option value="8">Every 8th beat</option>
+      </select>
+    </div>
+
+    <div class="field-group">
+      <label for="offset">Offset (ms)</label>
+      <input type="number" id="offset" value="0" step="1" placeholder="0" />
+    </div>
+
+    <div class="field-group">
+      <label for="prefix">Marker name prefix</label>
+      <input type="text" id="prefix" value="Beat" maxlength="32" />
+    </div>
+
+    <button id="detectBtn" class="detect-btn">Detect Beats on Selected Clip</button>
+
+    <div>
+      <div class="status-header">
+        <span>Status</span>
+        <button id="clearBtn" class="clear-btn" title="Clear log">✕</button>
+      </div>
+      <div id="statusLog">
+        <div class="log-idle">Ready. Select a clip or leave nothing selected to use the full sequence.</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

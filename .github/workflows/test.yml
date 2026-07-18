@@ -1,0 +1,55 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  validate:
+    name: Validate plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check manifest is valid JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8')); console.log('manifest.json OK')"
+
+      - name: Check package.json is valid JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('package.json', 'utf8')); console.log('package.json OK')"
+
+      - name: Validate JS modules parse without errors
+        run: |
+          node --input-type=module <<'EOF'
+          // Strip UXP-specific require() calls so Node can parse the module graph
+          import { readFileSync } from 'fs';
+
+          const files = ['src/wavParser.js', 'src/beatDetector.js'];
+          for (const f of files) {
+            try {
+              const src = readFileSync(f, 'utf8');
+              // Quick syntax check via dynamic Function (not full eval)
+              new Function(src.replace(/^export /gm, ''));
+              console.log(`${f} — syntax OK`);
+            } catch (e) {
+              console.error(`${f} — FAILED: ${e.message}`);
+              process.exit(1);
+            }
+          }
+          EOF
+
+      - name: Check version consistency
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+          if [ "$PKG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "Version mismatch: package.json=$PKG_VERSION manifest.json=$MANIFEST_VERSION"
+            exit 1
+          fi
+          echo "Versions match: $PKG_VERSION"
