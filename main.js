@@ -15,6 +15,11 @@ document.addEventListener('DOMContentLoaded', function () {
     btn.disabled = true;
     runDetection().finally(function () { btn.disabled = false; });
   });
+  document.getElementById('clearMarkersBtn').addEventListener('click', function () {
+    var btn = document.getElementById('clearMarkersBtn');
+    btn.disabled = true;
+    runClearMarkers().finally(function () { btn.disabled = false; });
+  });
   document.getElementById('clearBtn').addEventListener('click', function () {
     document.getElementById('statusLog').innerHTML = '';
   });
@@ -50,9 +55,10 @@ async function runDetection() {
       log('Detected ' + result.bpm.toFixed(1) + ' BPM', 'info');
     }
 
-    var nthBeat   = parseInt(document.getElementById('nthBeat').value, 10) || 1;
-    var offsetMs  = parseFloat(document.getElementById('offset').value) || 0;
-    var prefix    = document.getElementById('prefix').value.trim() || 'Beat';
+    var nthBeat    = parseInt(document.getElementById('nthBeat').value, 10) || 1;
+    var offsetMs   = parseFloat(document.getElementById('offset').value) || 0;
+    var prefix     = document.getElementById('prefix').value.trim() || 'Beat';
+    var colorIndex = parseInt(document.getElementById('markerColor').value, 10);
     var offsetSec = offsetMs / 1000;
     var clipStart = clipInfo.start;
 
@@ -77,8 +83,9 @@ async function runDetection() {
       if (i % nthBeat !== 0) continue;
       var sourceTimeSec = sourceStart + result.beats[i] + offsetSec;
       if (sourceTimeSec < 0) continue;
-      await createClipMarker(project, sequence, markersCollection, sourceTimeSec, prefix + ' ' + (count + 1));
+      var marker = await createClipMarker(project, sequence, markersCollection, sourceTimeSec, prefix + ' ' + (count + 1));
       count++;
+      if (colorIndex >= 0 && marker) await setMarkerColor(project, marker, colorIndex);
     }
 
     var afterCount = await countMarkers(markersCollection);
@@ -86,6 +93,39 @@ async function runDetection() {
       log('Markers on clip: ' + beforeCount + ' → ' + afterCount, 'info');
     }
     log('Done — placed ' + count + ' markers at ' + result.bpm.toFixed(1) + ' BPM.', 'success');
+
+  } catch (err) {
+    log('Error: ' + err.message, 'error');
+    console.error('[BM]', err);
+  }
+}
+
+async function runClearMarkers() {
+  try {
+    var project = await ppro.Project.getActiveProject();
+    if (!project) throw new Error('No active project — open a project first');
+
+    var sequence = await project.getActiveSequence();
+    if (!sequence) throw new Error('No active sequence — open a sequence in the timeline first');
+
+    var clipInfo = await getSelectedClipInfo(sequence);
+    if (!clipInfo) throw new Error('No clip selected — click an audio clip in the timeline first');
+
+    var pi = await clipInfo.trackItem.getProjectItem();
+    var clipItem = ppro.ClipProjectItem.queryCast(pi) || pi;
+    var mc = await ppro.Markers.getMarkers(clipItem);
+    var markers = await mc.getMarkers();
+    if (!markers || markers.length === 0) { log('No markers on this clip.', 'info'); return; }
+
+    log('Removing ' + markers.length + ' markers…', 'info');
+    var removed = 0;
+    for (var i = 0; i < markers.length; i++) {
+      if (await removeClipMarker(project, mc, markers[i])) removed++;
+    }
+
+    if (removed === 0) throw new Error('Could not remove markers — all removal signatures failed (see console)');
+    var left = await countMarkers(mc);
+    log('Removed ' + removed + ' markers' + (left > 0 ? ' (' + left + ' left)' : '') + '.', 'success');
 
   } catch (err) {
     log('Error: ' + err.message, 'error');
@@ -319,7 +359,7 @@ async function createClipMarker(project, sequence, markersCollection, timeInSeco
         console.log('[BM] marker signature #' + idx + ' confirmed (count ' + before + ' → ' + after + ')');
         _markerSig = idx;
       }
-      return;
+      return findMarkerByName(markersCollection, name);
     }
     console.log('[BM] sig#' + idx + ' committed but marker count unchanged (' + before + ' → ' + after + ')');
   }
@@ -333,6 +373,114 @@ function callMarkerSig(mc, idx, name, mtype, tt, ttZero) {
     case 1: return mc.createAddMarkerAction(name, mtype, tt, ttZero);
     case 2: return mc.createAddMarkerAction(name, mtype, tt, ttZero, '');
     case 3: return mc.createAddMarkerAction(name, '', tt);
+  }
+}
+
+async function findMarkerByName(mc, name) {
+  try {
+    var arr = await mc.getMarkers();
+    if (!arr) return null;
+    for (var i = arr.length - 1; i >= 0; i--) {
+      var nm = typeof arr[i].getName === 'function' ? await arr[i].getName() : arr[i].name;
+      if (nm === name) return arr[i];
+    }
+  } catch (_) {}
+  return null;
+}
+
+// Applies a marker color by index (0=Green 1=Red 2=Purple 3=Orange 4=Yellow
+// 5=White 6=Blue 7=Cyan). Probes candidate APIs on first use, verifies via
+// getColorIndex, and warns once instead of failing the run if none work.
+var _colorSig = null;
+var _colorWarned = false;
+
+async function setMarkerColor(project, marker, colorIndex) {
+  var candidates = _colorSig !== null ? [_colorSig] : [0, 1, 2];
+  for (var s = 0; s < candidates.length; s++) {
+    var idx = candidates[s];
+    try {
+      if (idx === 0) {
+        if (typeof marker.createSetColorIndexAction !== 'function') continue;
+        var action = await marker.createSetColorIndexAction(colorIndex);
+        if (!action) continue;
+        await project.executeTransaction(function (ca) { ca.addAction(action); });
+      } else if (idx === 1) {
+        if (typeof marker.setColorByIndex !== 'function') continue;
+        await marker.setColorByIndex(colorIndex);
+      } else {
+        if (typeof marker.setColorIndex !== 'function') continue;
+        await marker.setColorIndex(colorIndex);
+      }
+    } catch (e) {
+      console.log('[BM] color sig#' + idx + ' failed:', e && e.message);
+      continue;
+    }
+    var got = -1;
+    try {
+      got = typeof marker.getColorIndex === 'function' ? Number(await marker.getColorIndex()) : colorIndex;
+    } catch (_) { got = colorIndex; }
+    if (got === colorIndex) {
+      if (_colorSig === null) {
+        console.log('[BM] marker color signature #' + idx + ' confirmed');
+        _colorSig = idx;
+      }
+      return true;
+    }
+    console.log('[BM] color sig#' + idx + ' ran but colorIndex is ' + got);
+  }
+  if (!_colorWarned) {
+    _colorWarned = true;
+    log('Could not set marker color — markers placed with default color.', 'info');
+  }
+  return false;
+}
+
+// Removes one clip marker, probing candidate removal APIs on first use and
+// verifying via marker count, mirroring createClipMarker.
+var _removeSig = null;
+
+async function removeClipMarker(project, mc, marker) {
+  var candidates = _removeSig !== null ? [_removeSig] : [0, 1, 2];
+  for (var s = 0; s < candidates.length; s++) {
+    var idx = candidates[s];
+    var before = await countMarkers(mc);
+
+    var captured = null;
+    try {
+      await project.executeTransaction(async function (ca) {
+        captured = await callRemoveSig(mc, marker, idx);
+      });
+    } catch (e) {
+      console.log('[BM] remove sig#' + idx + ' failed:', e && e.message);
+      continue;
+    }
+    if (captured) {
+      try {
+        await project.executeTransaction(async function (ca) { ca.addAction(captured); });
+      } catch (e2) {
+        console.log('[BM] remove sig#' + idx + ' commit failed:', e2 && e2.message);
+        continue;
+      }
+    }
+
+    var after = await countMarkers(mc);
+    if (after >= 0 && before >= 0 && after < before) {
+      if (_removeSig === null) {
+        console.log('[BM] remove signature #' + idx + ' confirmed (count ' + before + ' → ' + after + ')');
+        _removeSig = idx;
+      }
+      return true;
+    }
+    console.log('[BM] remove sig#' + idx + ' ran but marker count unchanged (' + before + ' → ' + after + ')');
+  }
+  return false;
+}
+
+function callRemoveSig(mc, marker, idx) {
+  switch (idx) {
+    case 0: return typeof mc.createRemoveMarkerAction === 'function' ? mc.createRemoveMarkerAction(marker) : null;
+    case 1: return typeof mc.createDeleteMarkerAction === 'function' ? mc.createDeleteMarkerAction(marker) : null;
+    case 2: return typeof mc.removeMarker === 'function' ? mc.removeMarker(marker) : null;
   }
 }
 

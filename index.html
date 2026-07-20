@@ -61,6 +61,20 @@
     .detect-btn:hover { background: #6abaff; }
     .detect-btn:disabled { background: #383838; color: #999; cursor: not-allowed; }
 
+    .secondary-btn {
+      background: #4a4a4a;
+      border: 1px solid #555;
+      border-radius: 4px;
+      color: #e0e0e0;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 6px 12px;
+      width: 100%;
+    }
+
+    .secondary-btn:hover { background: #5a5a5a; }
+    .secondary-btn:disabled { background: #383838; color: #999; cursor: not-allowed; }
+
     .status-header {
       display: flex;
       justify-content: space-between;
@@ -140,7 +154,23 @@
       <input type="text" id="prefix" value="Beat" maxlength="32" />
     </div>
 
+    <div class="field-group">
+      <label for="markerColor">Marker color</label>
+      <select id="markerColor">
+        <option value="-1">Default</option>
+        <option value="0">Green</option>
+        <option value="1">Red</option>
+        <option value="2">Purple</option>
+        <option value="3">Orange</option>
+        <option value="4">Yellow</option>
+        <option value="5">White</option>
+        <option value="6">Blue</option>
+        <option value="7">Cyan</option>
+      </select>
+    </div>
+
     <button id="detectBtn" class="detect-btn">Detect Beats on Selected Clip</button>
+    <button id="clearMarkersBtn" class="secondary-btn">Clear Markers on Clip</button>
 
     <div>
       <div class="status-header">

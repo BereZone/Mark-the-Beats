@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-point, skipping audio loading and beat detection entirely; leave blank to auto-detect
 - Marker interval options for non-4/4 time signatures — every 3rd, 5th, 6th, 7th, 9th,
   12th, and 16th beat (3/4, 5/4, 6/8, 7/8, 9/8, 12/8, and multi-bar 4/4 groupings)
+- "Clear Markers on Clip" button — removes all clip markers from the selected clip,
+  with runtime probing of removal APIs and count verification per marker
+- Marker color selection (Green, Red, Purple, Orange, Yellow, White, Blue, Cyan, or
+  Default) applied to each placed marker; falls back to default color with a warning
+  if the color API is unavailable
 - Beat markers are now placed as **clip markers on the source audio clip** rather than
   sequence markers; they appear directly on the clip in the timeline and travel with the source
 - Marker placement is self-verifying: marker count on the clip is checked before and after
