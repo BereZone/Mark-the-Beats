@@ -35,12 +35,20 @@ async function runDetection() {
     if (!clipInfo) throw new Error('No clip selected — click an audio clip in the timeline first');
     log('Clip: ' + clipInfo.start.toFixed(3) + ' s – ' + clipInfo.end.toFixed(3) + ' s', 'info');
 
-    var audio = await loadClipAudio(clipInfo);
-    log('Audio: ' + audio.sampleRate + ' Hz, ' + (audio.samples.length / audio.sampleRate).toFixed(1) + ' s', 'info');
+    var manualBpm = parseFloat(document.getElementById('manualBpm').value);
+    var result;
+    if (!isNaN(manualBpm)) {
+      if (manualBpm < 1 || manualBpm > 999) throw new Error('BPM must be between 1 and 999');
+      result = beatsFromBpm(manualBpm, clipInfo.end - clipInfo.start);
+      log('Using manual BPM: ' + result.bpm.toFixed(1), 'info');
+    } else {
+      var audio = await loadClipAudio(clipInfo);
+      log('Audio: ' + audio.sampleRate + ' Hz, ' + (audio.samples.length / audio.sampleRate).toFixed(1) + ' s', 'info');
 
-    log('Detecting beats…', 'info');
-    var result = detectBeats(audio.samples, audio.sampleRate);
-    log('Detected ' + result.bpm.toFixed(1) + ' BPM', 'info');
+      log('Detecting beats…', 'info');
+      result = detectBeats(audio.samples, audio.sampleRate);
+      log('Detected ' + result.bpm.toFixed(1) + ' BPM', 'info');
+    }
 
     var nthBeat   = parseInt(document.getElementById('nthBeat').value, 10) || 1;
     var offsetMs  = parseFloat(document.getElementById('offset').value) || 0;
@@ -83,6 +91,15 @@ async function runDetection() {
     log('Error: ' + err.message, 'error');
     console.error('[BM]', err);
   }
+}
+
+// Beats on a fixed grid starting at the clip in-point — same time base as
+// detectBeats output (seconds relative to the clip's first audible sample).
+function beatsFromBpm(bpm, durationSec) {
+  var period = 60 / bpm;
+  var beats = [];
+  for (var t = 0; t < durationSec; t += period) beats.push(t);
+  return { bpm: bpm, beats: beats };
 }
 
 // ── Clip selection ────────────────────────────────────────────────────────────

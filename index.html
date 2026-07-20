@@ -109,12 +109,24 @@
     <h2>Beat Marker</h2>
 
     <div class="field-group">
+      <label for="manualBpm">BPM (blank = auto-detect)</label>
+      <input type="number" id="manualBpm" min="1" max="999" step="0.1" placeholder="Auto" />
+    </div>
+
+    <div class="field-group">
       <label for="nthBeat">Place marker every</label>
       <select id="nthBeat">
         <option value="1">Every beat (1×)</option>
-        <option value="2">Every 2nd beat</option>
-        <option value="4">Every 4th beat</option>
-        <option value="8">Every 8th beat</option>
+        <option value="2">Every 2nd beat (half bar in 4/4)</option>
+        <option value="3">Every 3rd beat (bar in 3/4)</option>
+        <option value="4">Every 4th beat (bar in 4/4)</option>
+        <option value="5">Every 5th beat (bar in 5/4)</option>
+        <option value="6">Every 6th beat (bar in 6/8, 2 bars in 3/4)</option>
+        <option value="7">Every 7th beat (bar in 7/8)</option>
+        <option value="8">Every 8th beat (2 bars in 4/4)</option>
+        <option value="9">Every 9th beat (bar in 9/8)</option>
+        <option value="12">Every 12th beat (bar in 12/8, 3 bars in 4/4)</option>
+        <option value="16">Every 16th beat (4 bars in 4/4)</option>
       </select>
     </div>
 
