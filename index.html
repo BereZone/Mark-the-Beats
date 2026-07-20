@@ -75,6 +75,22 @@
     .secondary-btn:hover { background: #5a5a5a; }
     .secondary-btn:disabled { background: #383838; color: #999; cursor: not-allowed; }
 
+    .field-row { display: flex; gap: 6px; }
+    .field-row input { flex: 1; min-width: 0; }
+
+    .auto-btn {
+      background: #4a4a4a;
+      border: 1px solid #555;
+      border-radius: 4px;
+      color: #e0e0e0;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 5px 10px;
+      flex-shrink: 0;
+    }
+
+    .auto-btn:hover { background: #5a5a5a; }
+
     .status-header {
       display: flex;
       justify-content: space-between;
@@ -124,13 +140,16 @@
 
     <div class="field-group">
       <label for="manualBpm">BPM (blank = auto-detect)</label>
-      <input type="number" id="manualBpm" min="1" max="999" step="0.1" placeholder="Auto" />
+      <div class="field-row">
+        <input type="number" id="manualBpm" min="1" max="999" step="0.1" placeholder="Auto" />
+        <button type="button" id="autoBpmBtn" class="auto-btn" title="Clear and use auto-detected BPM">Auto</button>
+      </div>
     </div>
 
     <div class="field-group">
       <label for="nthBeat">Place marker every</label>
       <select id="nthBeat">
-        <option value="1">Every beat (1×)</option>
+        <option value="1">Auto (every beat)</option>
         <option value="2">Every 2nd beat (half bar in 4/4)</option>
         <option value="3">Every 3rd beat (bar in 3/4)</option>
         <option value="4">Every 4th beat (bar in 4/4)</option>

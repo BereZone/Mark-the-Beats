@@ -1,4 +1,5 @@
 var parseWav    = require('./wavParser.js').parseWav;
+var parseMp3    = require('./mp3Parser.js').parseMp3;
 var detectBeats = require('./beatDetector.js').detectBeats;
 var ppro        = require('premierepro');
 var uxp         = require('uxp');
@@ -14,6 +15,12 @@ document.addEventListener('DOMContentLoaded', function () {
     var btn = document.getElementById('detectBtn');
     btn.disabled = true;
     runDetection().finally(function () { btn.disabled = false; });
+  });
+  document.getElementById('autoBpmBtn').addEventListener('click', function () {
+    var bpmInput = document.getElementById('manualBpm');
+    bpmInput.value = '';
+    bpmInput.dispatchEvent(new Event('input', { bubbles: true }));
+    bpmInput.dispatchEvent(new Event('change', { bubbles: true }));
   });
   document.getElementById('clearMarkersBtn').addEventListener('click', function () {
     var btn = document.getElementById('clearMarkersBtn');
@@ -228,6 +235,14 @@ async function loadClipAudio(clipInfo) {
     var wavRaw   = await wavEntry.read({ format: formats.binary });
     var parsed   = parseWav(rawToArrayBuffer(wavRaw));
     return sliceAudio(parsed.samples, parsed.sampleRate, sourceStart, sourceEnd);
+  }
+
+  if (ext === 'mp3') {
+    log('Reading MP3…', 'info');
+    var mp3Entry = await openFileByPath(filePath);
+    var mp3Raw   = await mp3Entry.read({ format: formats.binary });
+    var parsedMp3 = parseMp3(rawToArrayBuffer(mp3Raw));
+    return sliceAudio(parsedMp3.samples, parsedMp3.sampleRate, sourceStart, sourceEnd);
   }
 
   log('Transcoding to WAV…', 'info');

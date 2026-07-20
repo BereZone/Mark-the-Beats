@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Manual BPM input — enter a BPM to place markers on a fixed grid from the clip's
   in-point, skipping audio loading and beat detection entirely; leave blank to auto-detect
+- "Auto" button next to the BPM field to reliably clear it back to auto-detect mode
+  (clearing a number input by hand isn't always reliable), and the "Place marker every"
+  dropdown's default option is now explicitly labeled "Auto (every beat)"
 - Marker interval options for non-4/4 time signatures — every 3rd, 5th, 6th, 7th, 9th,
   12th, and 16th beat (3/4, 5/4, 6/8, 7/8, 9/8, 12/8, and multi-bar 4/4 groupings)
 - "Clear Markers on Clip" button — removes all clip markers from the selected clip,
