@@ -24,7 +24,8 @@ Ensure **Adobe Media Encoder** is installed — it handles the audio export step
 
 ## Known limitations
 
-- Requires Adobe Media Encoder (AME) to be installed for audio export.
+- WAV and MP3 clips are read directly — no AME dependency for those formats.
+- Other formats (AAC, MOV, etc.) still require Adobe Media Encoder for the transcode-to-WAV step.
 - AME must be available to Premiere's encoder bridge; if it isn't running, start it manually first.
 - Beat detection is a pure-JS energy-flux detector — works well on music with a steady kick/snare pattern; results on ambient or heavily syncopated tracks may need the offset control to correct phase drift.
 - Very short clips (< 2 s) may not yield reliable tempo estimates.

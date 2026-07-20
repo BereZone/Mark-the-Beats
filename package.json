@@ -5,7 +5,7 @@
   "main": "src/main.js",
   "scripts": {
     "package": "ccx-package . -o dist/beat-marker.ccx",
-    "validate": "node -e \"require('./src/beatDetector.js'); require('./src/wavParser.js'); console.log('Modules OK')\"",
+    "validate": "node -e \"require('./beatDetector.js'); require('./wavParser.js'); require('./mp3Parser.js'); console.log('Modules OK')\"",
     "test": "echo 'No automated tests yet — see docs/development.md for manual testing steps'"
   },
   "keywords": ["premiere-pro", "uxp", "beat-detection", "audio", "markers"],

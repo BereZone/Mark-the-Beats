@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Marker color selection (Green, Red, Purple, Orange, Yellow, White, Blue, Cyan, or
   Default) applied to each placed marker; falls back to default color with a warning
   if the color API is unavailable
+- Native MP3 decoding (`mp3Parser.js`, vendoring the dependency-free `js-mp3` decoder
+  under `vendor/js-mp3/`) — MP3 clips are read and decoded directly, skipping the AME
+  transcode step entirely, so detection is fast and works without Adobe Media Encoder
 - Beat markers are now placed as **clip markers on the source audio clip** rather than
   sequence markers; they appear directly on the clip in the timeline and travel with the source
 - Marker placement is self-verifying: marker count on the clip is checked before and after
@@ -35,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zero (AME and PPro internal encoder write size=0 during encode and may not update it)
 - Fixed URL encoding in `openFileByPath` so paths containing spaces are correctly
   resolved via the UXP local filesystem
+
+### Fixed
+- All `require()` calls in `mp3Parser.js` and the vendored `vendor/js-mp3/` decoder now
+  use explicit `.js` extensions, matching the rest of the codebase — the omitted
+  extensions relied on Node-style directory/index resolution that UXP's `require`
+  doesn't guarantee, which threw at load time and crashed the entire panel (not just
+  MP3 detection), since the failing `require` sat above the `DOMContentLoaded` handler
+- `npm run validate` referenced a stale `src/` path that no longer exists; now points
+  at the actual module locations and also validates `mp3Parser.js`
 
 ## [0.1.0] - 2026-07-16
 
