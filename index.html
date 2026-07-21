@@ -91,6 +91,82 @@
 
     .auto-btn:hover { background: #5a5a5a; }
 
+    #previewCanvas {
+      width: 100%;
+      height: 64px;
+      background: #202020;
+      border: 1px solid #555;
+      border-radius: 4px;
+      display: block;
+      cursor: pointer;
+    }
+
+    .preview-info {
+      color: #999;
+      font-size: 11px;
+    }
+
+    .preview-toolbar { display: flex; align-items: center; gap: 6px; }
+
+    .mini-btn {
+      background: #4a4a4a;
+      border: 1px solid #555;
+      border-radius: 4px;
+      color: #e0e0e0;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 4px 9px;
+      flex-shrink: 0;
+    }
+
+    .mini-btn:hover { background: #5a5a5a; }
+    .mini-btn:disabled { background: #383838; color: #666; cursor: not-allowed; }
+
+    /* Premiere-style zoom/scroll bar: a track spanning the full clip duration
+       with a draggable thumb representing the visible window. Drag the thumb
+       body to pan, either edge handle to resize (zoom). */
+    #zoomBar {
+      position: relative;
+      height: 14px;
+      background: #202020;
+      border: 1px solid #555;
+      border-radius: 7px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    #zoomBar.disabled { opacity: 0.4; }
+
+    #zoomThumb {
+      position: absolute;
+      top: 1px;
+      bottom: 1px;
+      left: 0;
+      width: 100%;
+      background: #5a5a5a;
+      border-radius: 6px;
+      cursor: grab;
+      box-sizing: border-box;
+    }
+
+    #zoomThumb:active { cursor: grabbing; background: #6a6a6a; }
+
+    /* Visible end-caps, brighter than the thumb body, so the resize zones read
+       as distinct grab points rather than blending into a featureless bar. */
+    .zoom-handle {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 7px;
+      background: #9a9a9a;
+      cursor: ew-resize;
+    }
+
+    .zoom-handle:hover { background: #b0b0b0; }
+
+    .zoom-handle-left  { left: 0; border-radius: 6px 0 0 6px; }
+    .zoom-handle-right { right: 0; border-radius: 0 6px 6px 0; }
+
     .status-header {
       display: flex;
       justify-content: space-between;
@@ -188,7 +264,26 @@
       </select>
     </div>
 
-    <button id="detectBtn" class="detect-btn">Detect Beats on Selected Clip</button>
+    <button id="analyzeBtn" class="detect-btn">Analyze Selected Clip</button>
+
+    <div class="field-group">
+      <label for="previewCanvas">Preview (click to seek)</label>
+      <canvas id="previewCanvas"></canvas>
+      <div class="preview-toolbar">
+        <button type="button" id="playBtn" class="mini-btn" disabled>▶ Play</button>
+        <button type="button" id="zoomOutBtn" class="mini-btn" disabled title="Zoom out">&minus;</button>
+        <div id="zoomBar" class="disabled" title="Drag to pan, edges to zoom">
+          <div id="zoomThumb">
+            <div class="zoom-handle zoom-handle-left" id="zoomHandleLeft"></div>
+            <div class="zoom-handle zoom-handle-right" id="zoomHandleRight"></div>
+          </div>
+        </div>
+        <button type="button" id="zoomInBtn" class="mini-btn" disabled title="Zoom in">&plus;</button>
+      </div>
+      <div id="previewInfo" class="preview-info">No analysis yet — click Analyze.</div>
+    </div>
+
+    <button id="placeBtn" class="detect-btn" disabled>Place Markers</button>
     <button id="clearMarkersBtn" class="secondary-btn">Clear Markers on Clip</button>
 
     <div>

@@ -15,15 +15,41 @@ Ensure **Adobe Media Encoder** is installed — it handles the audio export step
 
 1. Open a sequence in the Premiere timeline.
 2. *(Optional)* Select a clip to analyse only that clip's audio; leave nothing selected to analyse the full sequence.
-3. Adjust settings in the panel:
+3. Click **Analyze Selected Clip** — this decodes the audio (or reads the manual BPM field)
+   and draws a preview: the waveform with a tick at every detected/computed beat position.
+   No markers are placed yet.
+4. Use the preview toolbar to inspect it closely:
+   - The waveform starts zoomed to the first 4 seconds. The bar next to the Play button
+     works like Premiere's timeline zoom bar: drag the middle to pan, drag either edge
+     (the brighter end caps) to zoom in/out, or click the bare track to jump there.
+     The `+`/`−` buttons zoom in/out centered on the current view
+   - Mouse-wheel zoom isn't available — this UXP host doesn't forward scroll-wheel
+     input into the panel at all
+   - Click anywhere on the waveform, or click **▶ Play**, to move Premiere's own
+     playhead there — sound comes from Premiere itself, not the panel. Whether
+     Premiere can be told to start continuous playback from a script depends on
+     the Premiere version; if it can't, Play still jumps the playhead to that
+     position instead — see Known limitations
+5. Adjust settings and watch the preview update live, with no need to re-analyze:
+   - **BPM** — leave blank for auto-detect, or type a value; click **Auto** to clear it and
+     revert to the detected BPM
    - **Place marker every** — use every Nth beat (good for sparser edits: 2 = half-time, 4 = bar markers)
    - **Offset (ms)** — nudge all markers earlier (negative) or later (positive)
+   - **Marker color** — applied to each marker when placed
    - **Marker name prefix** — text before the beat number, e.g. `Beat 1`, `Beat 2`…
-4. Click **Detect Beats on Selected Clip**.
-5. Watch the status log — when done, red markers appear on the sequence timeline.
+6. When the preview looks right, click **Place Markers** to commit clip markers to the
+   clip that was analyzed.
 
 ## Known limitations
 
+- Playback moves Premiere's own sequence playhead rather than playing audio inside
+  the panel — UXP's webview here has no functional `<audio>` element at all
+  (`document.createElement('audio')` returns a node without even `play()`/`pause()`).
+  Whether continuous playback can be *started* from a script is unconfirmed and
+  depends on the Premiere version — a few candidate API calls are tried and verified
+  by checking whether the playhead actually advances; if none work, Play still moves
+  Premiere's playhead to the clicked/previewed position (a scrub, not a full
+  transport-controlled play) rather than claiming playback started.
 - WAV and MP3 clips are read directly — no AME dependency for those formats.
 - Other formats (AAC, MOV, etc.) still require Adobe Media Encoder for the transcode-to-WAV step.
 - AME must be available to Premiere's encoder bridge; if it isn't running, start it manually first.

@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Zoomable/pannable preview: the waveform no longer compresses the whole clip into
+  one narrow view — it defaults to a 4-second zoomed-in window at the clip start,
+  with a Premiere-style zoom bar (drag the thumb to pan, drag either edge to
+  resize/zoom, click the bare track to jump there — edges now have visibly distinct
+  end-cap styling rather than blending into the bar) plus `+`/`−` buttons for
+  click-based zoom centered on the current window. Mouse-wheel zoom was attempted
+  but dropped: confirmed live that this UXP host never dispatches `wheel` events
+  into the panel DOM at all (click/mousedown are forwarded, wheel isn't) — a gap
+  in the native embedding no JS-side event binding can work around
+- Playback drives **Premiere's own sequence transport** instead of an in-panel
+  `<audio>` element — confirmed on this UXP build that `document.createElement('audio')`
+  returns an inert node without even `play()`/`pause()`, so there's no real audio
+  API to build on inside the panel. Play/seek now move and (where scriptable) start
+  the actual sequence playhead via the `premierepro` API, so sound comes from
+  Premiere itself. Since nothing in this codebase had touched playback before and
+  the exact method names aren't documented, position-set and play/pause are each
+  probed across a few candidate method names and verified — position-set by reading
+  the position back, play by checking whether the playhead genuinely advances
+  afterward (not just "no exception thrown," which proved to be a false
+  signal with the `<audio>` element too) — mirroring how marker creation/color/removal
+  are handled elsewhere in this file. If no candidate advances the playhead, Play
+  falls back to only moving Premiere's playhead to the clicked/previewed position
+  rather than claiming continuous playback works. A local playhead line tracks the
+  polled position on the waveform, with the zoom window following it during playback
+- Split the single "Detect Beats" action into an **Analyze → preview → Place Markers**
+  workflow: **Analyze Selected Clip** decodes/detects (or reads the manual BPM) and
+  draws a canvas preview (waveform + beat-position ticks) without touching the
+  timeline; **Place Markers** commits the previewed grid to clip markers. Changing
+  BPM, marker interval, offset, or color after analyzing recomputes and redraws the
+  whole grid live, with no re-decode needed for interval/offset/color changes and no
+  re-detection needed for BPM edits (regridded from the cached clip duration; clearing
+  back to Auto restores the cached auto-detected grid without re-analyzing)
 - Manual BPM input — enter a BPM to place markers on a fixed grid from the clip's
   in-point, skipping audio loading and beat detection entirely; leave blank to auto-detect
 - "Auto" button next to the BPM field to reliably clear it back to auto-detect mode
@@ -43,6 +75,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved via the UXP local filesystem
 
 ### Fixed
+- Dragging the zoom bar was glitchy and unresponsive: a mousedown on an edge handle
+  bubbled up to the parent thumb's own listener too, starting a second drag session
+  (pan) simultaneously with the resize drag — both `mousemove` handlers then fought
+  over `previewWindow` on every tick. Fixed with `stopPropagation()` in the drag
+  starter. Also throttled the (expensive, full-waveform-rescan) redraw during a drag
+  to once per animation frame instead of once per `mousemove` — the zoom bar's own
+  thumb position still updates immediately every move since that's cheap CSS-only
+- The preview canvas rendered as a solid fill instead of a waveform — UXP's canvas
+  doesn't reliably keep `moveTo`-separated subpaths disjoint, so a single path with
+  one 2-point segment per pixel column rendered as one filled blob rather than
+  independent bars. Waveform bars and beat ticks are now drawn with one `fillRect`
+  per column/tick instead, which has no path/subpath ambiguity
+- The preview canvas crashed on every redraw with `ctx.setTransform is not a function`
+  — UXP's canvas 2D context doesn't implement `setTransform`. High-DPI scaling now
+  uses a guarded `ctx.scale()` (called fresh after resizing the backing store, since
+  that reset already returns the transform to identity) and falls back to a 1x
+  (CSS-pixel) backing store if `scale` itself isn't available either
 - All `require()` calls in `mp3Parser.js` and the vendored `vendor/js-mp3/` decoder now
   use explicit `.js` extensions, matching the rest of the codebase — the omitted
   extensions relied on Node-style directory/index resolution that UXP's `require`
