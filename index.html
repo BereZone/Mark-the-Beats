@@ -121,6 +121,8 @@
 
     .mini-btn:hover { background: #5a5a5a; }
     .mini-btn:disabled { background: #383838; color: #666; cursor: not-allowed; }
+    .mini-btn.armed { background: #4a9ef7; border-color: #4a9ef7; color: #fff; }
+    .mini-btn.armed:hover { background: #6abaff; }
 
     /* Premiere-style zoom/scroll bar: a track spanning the full clip duration
        with a draggable thumb representing the visible window. Drag the thumb
@@ -279,6 +281,11 @@
           </div>
         </div>
         <button type="button" id="zoomInBtn" class="mini-btn" disabled title="Zoom in">&plus;</button>
+      </div>
+      <div class="preview-toolbar">
+        <button type="button" id="anchorBtn" class="mini-btn" disabled title="Then click the downbeat in the waveform to lock the grid's phase to it (Beat 1)">◎ Set Beat 1</button>
+        <button type="button" id="anchorClearBtn" class="mini-btn" disabled title="Remove the anchor and revert to the detected phase">Clear anchor</button>
+        <span id="anchorInfo" class="preview-info"></span>
       </div>
       <div id="previewInfo" class="preview-info">No analysis yet — click Analyze.</div>
     </div>

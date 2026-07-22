@@ -34,6 +34,10 @@ var MIN_ZOOM_SEC = 0.5;
 // Reset to zoomed-in-at-the-start on every fresh Analyze.
 var previewWindow = null;
 
+// True while "Set Beat 1" is armed: the next waveform click sets analysis.anchor
+// instead of seeking.
+var anchorArmed = false;
+
 // requestAnimationFrame isn't guaranteed in UXP's panel webview (canvas already
 // turned out to be missing standard APIs there) — fall back to a plain timer.
 var rafFn = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : function (cb) { return setTimeout(cb, 33); };
@@ -74,6 +78,8 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('zoomInBtn').addEventListener('click', function () { zoomBy(0.7); });
   document.getElementById('zoomOutBtn').addEventListener('click', function () { zoomBy(1 / 0.7); });
   document.getElementById('previewCanvas').addEventListener('click', onCanvasClick);
+  document.getElementById('anchorBtn').addEventListener('click', toggleAnchorArm);
+  document.getElementById('anchorClearBtn').addEventListener('click', clearAnchor);
   // Confirmed live: this UXP host never dispatches 'wheel' events into the panel
   // DOM at all (click/mousedown are forwarded, wheel isn't — a gap in the native
   // embedding, not a JS-side binding issue, so no event-registration trick fixes
@@ -143,16 +149,23 @@ async function runAnalyze() {
     // sequence/project are cached alongside the clip so Place Markers and
     // playback both operate on what was actually analyzed, not whatever
     // happens to be active/selected later.
+    // naturalBeats is the un-anchored grid (detector phase, or a from-in-point
+    // BPM grid); allBeats is what preview/placement consume and is derived from
+    // it by applyGrid, re-phased through the downbeat anchor when one is set.
     analysis = {
       clipInfo: clipInfo, sequence: sequence, project: project,
       sourceStart: sourceStart, duration: duration,
-      bpm: bpm, allBeats: allBeats, detected: detected, waveform: waveform
+      bpm: bpm, naturalBeats: allBeats, allBeats: allBeats,
+      anchor: null, detected: detected, waveform: waveform
     };
+    anchorArmed = false;
+    applyGrid();
 
     previewWindow = { start: 0, len: Math.min(DEFAULT_ZOOM_SEC, duration) };
     previewPlayheadRel = null;
 
     document.getElementById('placeBtn').disabled = false;
+    updateAnchorUi();
     document.getElementById('zoomBar').classList.remove('disabled');
     document.getElementById('zoomInBtn').disabled = false;
     document.getElementById('zoomOutBtn').disabled = false;
@@ -182,6 +195,8 @@ function resetPreviewControls() {
   var playBtn = document.getElementById('playBtn');
   playBtn.disabled = true;
   playBtn.textContent = '▶ Play';
+  anchorArmed = false;
+  updateAnchorUi();
 }
 
 // Commits the cached analysis to clip markers on the clip that was analyzed —
@@ -245,13 +260,15 @@ function onBpmChanged() {
   if (!isNaN(val)) {
     if (val < 1 || val > 999) return;
     analysis.bpm = val;
-    analysis.allBeats = beatsFromBpm(val, analysis.duration).beats;
+    analysis.naturalBeats = beatsFromBpm(val, analysis.duration).beats;
+    applyGrid();
     document.getElementById('placeBtn').disabled = false;
     redrawPreview();
   } else if (raw === '') {
     if (analysis.detected) {
       analysis.bpm = analysis.detected.bpm;
-      analysis.allBeats = analysis.detected.beats;
+      analysis.naturalBeats = analysis.detected.beats;
+      applyGrid();
       document.getElementById('placeBtn').disabled = false;
       redrawPreview();
       log('Reverted to detected BPM: ' + analysis.bpm.toFixed(1), 'info');
@@ -283,7 +300,7 @@ function redrawPreview() {
     previewBeats.push(t);
   }
 
-  drawWaveformPreview(analysis.waveform, analysis.duration, previewBeats, colorIndex, previewWindow, previewPlayheadRel);
+  drawWaveformPreview(analysis.waveform, analysis.duration, previewBeats, colorIndex, previewWindow, previewPlayheadRel, analysis.anchor);
 
   var info = document.getElementById('previewInfo');
   if (info) {
@@ -293,7 +310,7 @@ function redrawPreview() {
   }
 }
 
-function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, playheadRel) {
+function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, playheadRel, anchorRel) {
   var canvas = document.getElementById('previewCanvas');
   if (!canvas || !durationSec || !win) return;
 
@@ -365,6 +382,17 @@ function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, p
     if (t < winStart || t > winEnd) continue;
     var xPos = Math.round(((t - winStart) / winLen) * cssWidth);
     ctx.fillRect(xPos, 0, 1, cssHeight);
+  }
+
+  // Downbeat anchor: a distinct gold line with a small flag block at the top, so
+  // the locked Beat 1 reads apart from the beat ticks and the white playhead.
+  // Drawn as fillRects (no path/triangle) — UXP's canvas path handling is
+  // unreliable here, as the waveform rendering above already works around.
+  if (anchorRel != null && anchorRel >= winStart && anchorRel <= winEnd) {
+    var ax = Math.round(((anchorRel - winStart) / winLen) * cssWidth);
+    ctx.fillStyle = '#ffd24a';
+    ctx.fillRect(ax, 0, 2, cssHeight);
+    ctx.fillRect(ax - 3, 0, 8, 5);
   }
 
   if (playheadRel != null && playheadRel >= winStart && playheadRel <= winEnd) {
@@ -604,7 +632,9 @@ async function onCanvasClick(evt) {
   var rect = canvas.getBoundingClientRect();
   if (!rect || !rect.width) return;
   var xFrac = clampNum((evt.clientX - rect.left) / rect.width, 0, 1);
-  await seekTo(previewWindow.start + xFrac * previewWindow.len);
+  var relSec = previewWindow.start + xFrac * previewWindow.len;
+  if (anchorArmed) { setAnchor(relSec); return; }
+  await seekTo(relSec);
 }
 
 async function seekTo(relSec) {
@@ -731,6 +761,69 @@ function beatsFromBpm(bpm, durationSec) {
   var beats = [];
   for (var t = 0; t < durationSec; t += period) beats.push(t);
   return { bpm: bpm, beats: beats };
+}
+
+// ── Downbeat anchoring ─────────────────────────────────────────────────────────
+
+// Derives analysis.allBeats (what preview + placement consume) from the current
+// BPM and the un-anchored naturalBeats. With an anchor set, the grid is rebuilt
+// at the current tempo so that a beat falls exactly on the anchor — spanning the
+// whole clip, filling backward from the anchor to the start as well as forward —
+// which corrects the detector's phase (or a manual grid's) to the beat the user
+// pointed at. Cleared, it reverts to naturalBeats untouched.
+function applyGrid() {
+  if (!analysis) return;
+  if (analysis.anchor != null && analysis.bpm > 0) {
+    var period = 60 / analysis.bpm;
+    var phase = ((analysis.anchor % period) + period) % period;
+    var beats = [];
+    for (var t = phase; t < analysis.duration + 1e-9; t += period) beats.push(t);
+    analysis.allBeats = beats;
+  } else {
+    analysis.allBeats = analysis.naturalBeats;
+  }
+}
+
+function toggleAnchorArm() {
+  if (!analysis) return;
+  anchorArmed = !anchorArmed;
+  updateAnchorUi();
+}
+
+function setAnchor(relSec) {
+  if (!analysis) return;
+  analysis.anchor = clampNum(relSec, 0, analysis.duration);
+  anchorArmed = false;
+  applyGrid();
+  document.getElementById('placeBtn').disabled = false;
+  updateAnchorUi();
+  redrawPreview();
+  log('Beat 1 anchored at ' + analysis.anchor.toFixed(3) + 's — grid re-phased.', 'success');
+}
+
+function clearAnchor() {
+  if (!analysis || analysis.anchor == null) { anchorArmed = false; updateAnchorUi(); return; }
+  analysis.anchor = null;
+  anchorArmed = false;
+  applyGrid();
+  updateAnchorUi();
+  redrawPreview();
+  log('Anchor cleared — reverted to ' + (analysis.detected ? 'detected' : 'grid') + ' phase.', 'info');
+}
+
+function updateAnchorUi() {
+  var btn = document.getElementById('anchorBtn');
+  var clearBtn = document.getElementById('anchorClearBtn');
+  var info = document.getElementById('anchorInfo');
+  if (!btn || !clearBtn) return;
+  btn.disabled = !analysis;
+  clearBtn.disabled = !analysis || analysis.anchor == null;
+  btn.textContent = anchorArmed ? '◎ Click waveform…' : '◎ Set Beat 1';
+  if (anchorArmed) btn.classList.add('armed'); else btn.classList.remove('armed');
+  if (info) {
+    if (analysis && analysis.anchor != null) info.textContent = 'Beat 1 @ ' + analysis.anchor.toFixed(2) + 's';
+    else info.textContent = anchorArmed ? 'Click the downbeat in the waveform' : '';
+  }
 }
 
 // ── Clip selection ────────────────────────────────────────────────────────────

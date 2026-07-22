@@ -30,6 +30,10 @@ Ensure **Adobe Media Encoder** is installed — it handles the audio export step
      Premiere can be told to start continuous playback from a script depends on
      the Premiere version; if it can't, Play still jumps the playhead to that
      position instead — see Known limitations
+   - **◎ Set Beat 1** then click the downbeat in the waveform to lock the grid's
+     phase to it — the grid rebuilds at the current tempo so a beat lands exactly
+     there (drawn as a gold flagged line). Use it when the auto-detected grid is a
+     hair out of phase with the real downbeat; **Clear anchor** reverts
 5. Adjust settings and watch the preview update live, with no need to re-analyze:
    - **BPM** — leave blank for auto-detect, or type a value; click **Auto** to clear it and
      revert to the detected BPM

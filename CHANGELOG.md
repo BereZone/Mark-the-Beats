@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-22
+
 ### Added
+- **Downbeat anchoring** — arm **Set Beat 1**, then click the downbeat in the
+  waveform to lock the grid's phase to it. The whole grid is rebuilt at the current
+  tempo so a beat lands exactly on the anchor (filling backward to the clip start as
+  well as forward), overriding the detector's (or a manual grid's) phase with the
+  beat the user pointed at. The anchor is drawn as a distinct gold flagged line,
+  survives BPM changes (re-phased at the new tempo), and **Clear anchor** reverts to
+  the detected/computed phase. Fixes the common case of the auto-detected grid being
+  a hair out of phase with the actual downbeat
 - Zoomable/pannable preview: the waveform no longer compresses the whole clip into
   one narrow view — it defaults to a 4-second zoomed-in window at the clip start,
   with a Premiere-style zoom bar (drag the thumb to pan, drag either edge to
@@ -75,6 +85,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved via the UXP local filesystem
 
 ### Fixed
+- Auto-detected beats on MP3 clips landed a small, consistent amount (roughly a
+  frame, tens of milliseconds) after where they should — MP3 encoders (LAME and
+  LAME-compatible encoders like ffmpeg's libmp3lame) pad the front of the
+  compressed stream with priming samples for the MDCT filterbank, and often the
+  tail too, typically ~500-1150 samples each way. The vendored decoder didn't
+  strip these, so decoded sample 0 didn't actually correspond to the true start
+  of the audio, silently shifting every detected beat later by that amount. This
+  is the standard mechanism any gapless-aware MP3 player compensates for.
+  `mp3Parser.js` now reads the delay/padding fields from the file's Xing/LAME
+  tag (scanned directly for the tag bytes rather than computed from frame-header
+  offsets, to be robust to getting MPEG-version/channel-mode offset math wrong)
+  and trims the decoded PCM accordingly before beat detection ever sees it.
+  Verified the tag-parsing logic — flag-based optional-field skipping, the
+  bit-packed delay/padding extraction, and correctly returning no trim when no
+  tag is present — against constructed test buffers covering several flag
+  combinations; the underlying premise (encoder delay causing exactly this kind
+  of drift) is well-established for MP3 generally, but hasn't been confirmed
+  against a real affected file
 - Dragging the zoom bar was glitchy and unresponsive: a mousedown on an edge handle
   bubbled up to the parent thumb's own listener too, starting a second drag session
   (pan) simultaneously with the resize drag — both `mousemove` handlers then fought
@@ -113,5 +141,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Status/log area showing detected BPM and marker count
 - Automatic cleanup of temporary WAV files
 
-[Unreleased]: https://github.com/YOUR_ORG/beat-marker/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/YOUR_ORG/beat-marker/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/YOUR_ORG/beat-marker/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/YOUR_ORG/beat-marker/releases/tag/v0.1.0
