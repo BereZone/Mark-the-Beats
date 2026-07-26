@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Sub-beat subdivisions in the "Place marker every" control — **½ beat (8th notes)**
+  and **¼ beat (16th notes)** place markers denser than one-per-beat, aligned to the
+  beat grid (and to the downbeat anchor when set). The interval is now a
+  beats-per-marker value so sparser multiples and denser subdivisions share one
+  generator that both the preview and Place Markers draw from, keeping them identical
+
+### Changed
+- Preview toolbar polish: the zoom `+`/`−` buttons are now compact icon buttons; the
+  text mini-buttons share a consistent height and no longer wrap; and the zoom bar is
+  taller and higher-contrast (so it's easier to see) while taking less horizontal width
+
 ## [0.2.0] - 2026-07-22
 
 ### Added

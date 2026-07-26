@@ -109,13 +109,19 @@
     .preview-toolbar { display: flex; align-items: center; gap: 6px; }
 
     .mini-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       background: #4a4a4a;
       border: 1px solid #555;
       border-radius: 4px;
       color: #e0e0e0;
       cursor: pointer;
       font-size: 11px;
-      padding: 4px 9px;
+      line-height: 1;
+      height: 24px;
+      padding: 0 10px;
+      white-space: nowrap;
       flex-shrink: 0;
     }
 
@@ -124,17 +130,24 @@
     .mini-btn.armed { background: #4a9ef7; border-color: #4a9ef7; color: #fff; }
     .mini-btn.armed:hover { background: #6abaff; }
 
+    /* Compact icon buttons for zoom in/out — smaller than the text mini-buttons. */
+    .zoom-step {
+      padding: 0;
+      width: 22px;
+      font-size: 14px;
+    }
+
     /* Premiere-style zoom/scroll bar: a track spanning the full clip duration
        with a draggable thumb representing the visible window. Drag the thumb
        body to pan, either edge handle to resize (zoom). */
     #zoomBar {
       position: relative;
-      height: 14px;
-      background: #202020;
-      border: 1px solid #555;
-      border-radius: 7px;
-      flex: 1;
-      min-width: 0;
+      height: 18px;
+      background: #151515;
+      border: 1px solid #6d6d6d;
+      border-radius: 9px;
+      flex: 0 1 150px;
+      min-width: 90px;
     }
 
     #zoomBar.disabled { opacity: 0.4; }
@@ -145,13 +158,13 @@
       bottom: 1px;
       left: 0;
       width: 100%;
-      background: #5a5a5a;
-      border-radius: 6px;
+      background: #7d7d7d;
+      border-radius: 8px;
       cursor: grab;
       box-sizing: border-box;
     }
 
-    #zoomThumb:active { cursor: grabbing; background: #6a6a6a; }
+    #zoomThumb:active { cursor: grabbing; background: #8f8f8f; }
 
     /* Visible end-caps, brighter than the thumb body, so the resize zones read
        as distinct grab points rather than blending into a featureless bar. */
@@ -159,15 +172,15 @@
       position: absolute;
       top: 0;
       bottom: 0;
-      width: 7px;
-      background: #9a9a9a;
+      width: 8px;
+      background: #b4b4b4;
       cursor: ew-resize;
     }
 
-    .zoom-handle:hover { background: #b0b0b0; }
+    .zoom-handle:hover { background: #cccccc; }
 
-    .zoom-handle-left  { left: 0; border-radius: 6px 0 0 6px; }
-    .zoom-handle-right { right: 0; border-radius: 0 6px 6px 0; }
+    .zoom-handle-left  { left: 0; border-radius: 8px 0 0 8px; }
+    .zoom-handle-right { right: 0; border-radius: 0 8px 8px 0; }
 
     .status-header {
       display: flex;
@@ -227,7 +240,9 @@
     <div class="field-group">
       <label for="nthBeat">Place marker every</label>
       <select id="nthBeat">
-        <option value="1">Auto (every beat)</option>
+        <option value="0.25">Every ¼ beat (16th notes)</option>
+        <option value="0.5">Every ½ beat (8th notes)</option>
+        <option value="1" selected>Auto (every beat)</option>
         <option value="2">Every 2nd beat (half bar in 4/4)</option>
         <option value="3">Every 3rd beat (bar in 3/4)</option>
         <option value="4">Every 4th beat (bar in 4/4)</option>
@@ -273,14 +288,14 @@
       <canvas id="previewCanvas"></canvas>
       <div class="preview-toolbar">
         <button type="button" id="playBtn" class="mini-btn" disabled>▶ Play</button>
-        <button type="button" id="zoomOutBtn" class="mini-btn" disabled title="Zoom out">&minus;</button>
+        <button type="button" id="zoomOutBtn" class="mini-btn zoom-step" disabled title="Zoom out">&minus;</button>
         <div id="zoomBar" class="disabled" title="Drag to pan, edges to zoom">
           <div id="zoomThumb">
             <div class="zoom-handle zoom-handle-left" id="zoomHandleLeft"></div>
             <div class="zoom-handle zoom-handle-right" id="zoomHandleRight"></div>
           </div>
         </div>
-        <button type="button" id="zoomInBtn" class="mini-btn" disabled title="Zoom in">&plus;</button>
+        <button type="button" id="zoomInBtn" class="mini-btn zoom-step" disabled title="Zoom in">&plus;</button>
       </div>
       <div class="preview-toolbar">
         <button type="button" id="anchorBtn" class="mini-btn" disabled title="Then click the downbeat in the waveform to lock the grid's phase to it (Beat 1)">◎ Set Beat 1</button>

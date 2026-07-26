@@ -210,8 +210,6 @@ async function runPlaceMarkers() {
     var sequence = await project.getActiveSequence();
     if (!sequence) throw new Error('No active sequence — open a sequence in the timeline first');
 
-    var nthBeat    = parseInt(document.getElementById('nthBeat').value, 10) || 1;
-    var offsetSec  = (parseFloat(document.getElementById('offset').value) || 0) / 1000;
     var prefix     = document.getElementById('prefix').value.trim() || 'Beat';
     var colorIndex = parseInt(document.getElementById('markerColor').value, 10);
 
@@ -226,9 +224,10 @@ async function runPlaceMarkers() {
     var beforeCount = await countMarkers(markersCollection);
     var count = 0;
 
-    for (var i = 0; i < analysis.allBeats.length; i++) {
-      if (i % nthBeat !== 0) continue;
-      var sourceTimeSec = sourceStart + analysis.allBeats[i] + offsetSec;
+    // Same generator the preview draws from, so placement matches the preview exactly.
+    var markerBeats = computeMarkerBeats();
+    for (var i = 0; i < markerBeats.length; i++) {
+      var sourceTimeSec = sourceStart + markerBeats[i];
       if (sourceTimeSec < 0) continue;
       var marker = await createClipMarker(project, sequence, markersCollection, sourceTimeSec, prefix + ' ' + (count + 1));
       count++;
@@ -286,19 +285,37 @@ function onFilterChanged() {
   redrawPreview();
 }
 
+// Marker positions in clip-relative seconds — offset applied, clipped to the clip.
+// Built from the beat grid's phase at the selected interval, expressed in
+// beats-per-marker: 1 = every beat, 2/3/4… = every Nth beat (sparser), and the
+// sub-beat options 0.5 = every ½ beat (8th notes), 0.25 = every ¼ beat (16th).
+// Both the preview and Place Markers call this, so what's drawn is what's placed.
+function computeMarkerBeats() {
+  if (!analysis || !analysis.bpm) return [];
+  var interval  = parseFloat(document.getElementById('nthBeat').value) || 1;
+  var offsetSec = (parseFloat(document.getElementById('offset').value) || 0) / 1000;
+  var period    = 60 / analysis.bpm;
+  var spacing   = period * interval;
+  if (!(spacing > 0)) return [];
+  // allBeats[0] is the grid phase in [0, period) — the detected phase, 0 for a
+  // manual grid, or the downbeat anchor's phase. Step from the first on-grid
+  // point at or after 0 so sub-beat markers stay aligned to the beats.
+  var phase = analysis.allBeats.length ? analysis.allBeats[0] : 0;
+  var start = ((phase % spacing) + spacing) % spacing;
+  var out = [];
+  for (var t = start; t < analysis.duration + 1e-9; t += spacing) {
+    var tt = t + offsetSec;
+    if (tt < 0 || tt > analysis.duration) continue;
+    out.push(tt);
+  }
+  return out;
+}
+
 function redrawPreview() {
   if (!analysis || !previewWindow) return;
-  var nthBeat    = parseInt(document.getElementById('nthBeat').value, 10) || 1;
-  var offsetSec  = (parseFloat(document.getElementById('offset').value) || 0) / 1000;
   var colorIndex = parseInt(document.getElementById('markerColor').value, 10);
 
-  var previewBeats = [];
-  for (var i = 0; i < analysis.allBeats.length; i++) {
-    if (i % nthBeat !== 0) continue;
-    var t = analysis.allBeats[i] + offsetSec;
-    if (t < 0 || t > analysis.duration) continue;
-    previewBeats.push(t);
-  }
+  var previewBeats = computeMarkerBeats();
 
   drawWaveformPreview(analysis.waveform, analysis.duration, previewBeats, colorIndex, previewWindow, previewPlayheadRel, analysis.anchor);
 

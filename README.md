@@ -37,7 +37,8 @@ Ensure **Adobe Media Encoder** is installed — it handles the audio export step
 5. Adjust settings and watch the preview update live, with no need to re-analyze:
    - **BPM** — leave blank for auto-detect, or type a value; click **Auto** to clear it and
      revert to the detected BPM
-   - **Place marker every** — use every Nth beat (good for sparser edits: 2 = half-time, 4 = bar markers)
+   - **Place marker every** — sparser (every Nth beat: 2 = half-time, 4 = bar markers) or
+     denser sub-beat subdivisions (½ beat = 8th notes, ¼ beat = 16th notes), aligned to the grid
    - **Offset (ms)** — nudge all markers earlier (negative) or later (positive)
    - **Marker color** — applied to each marker when placed
    - **Marker name prefix** — text before the beat number, e.g. `Beat 1`, `Beat 2`…
