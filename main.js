@@ -87,6 +87,7 @@ document.addEventListener('DOMContentLoaded', function () {
   });
   document.getElementById('zoomInBtn').addEventListener('click', function () { zoomBy(0.7); });
   document.getElementById('zoomOutBtn').addEventListener('click', function () { zoomBy(1 / 0.7); });
+  document.getElementById('previewCanvas').addEventListener('mousedown', onCanvasMouseDown);
   document.getElementById('previewCanvas').addEventListener('click', onCanvasClick);
   document.getElementById('anchorBtn').addEventListener('click', toggleAnchorArm);
   document.getElementById('anchorClearBtn').addEventListener('click', clearAnchor);
@@ -184,6 +185,10 @@ async function runAnalyze() {
     rangeArm = null;
     applyGrid();
 
+    stopPlayheadPoll();
+    stopInPanelSource();
+    stopPremiereFollow();
+    panelStartedPlayback = false;
     previewWindow = { start: 0, len: Math.min(DEFAULT_ZOOM_SEC, duration) };
     previewPlayheadRel = null;
 
@@ -197,6 +202,7 @@ async function runAnalyze() {
     document.getElementById('playBtn').textContent = '▶ Play';
     updateZoomBar();
     redrawPreview();
+    startPremiereFollow();
     log('Analysis ready — adjust settings or click Place Markers.', 'success');
 
   } catch (err) {
@@ -215,6 +221,9 @@ function resetPreviewControls() {
   document.getElementById('zoomInBtn').disabled = true;
   document.getElementById('zoomOutBtn').disabled = true;
   stopPlayheadPoll();
+  stopInPanelSource();
+  stopPremiereFollow();
+  panelStartedPlayback = false;
   previewPlayheadRel = null;
   var playBtn = document.getElementById('playBtn');
   playBtn.disabled = true;
@@ -504,15 +513,25 @@ function showPreviewMessage(msg) {
 
 // ── Zoom / pan (Premiere-style zoom bar) ────────────────────────────────────────
 
-// Reflects previewWindow onto the zoom bar's thumb position/width as percentages
-// of the full clip duration.
+// Smallest the zoom thumb is ever drawn, in pixels, so it stays easy to grab even
+// when the visible window is a tiny slice of a long clip. This floors only the
+// thumb's drawn width, not the actual zoom (previewWindow.len is untouched).
+var MIN_THUMB_PX = 30;
+
+// Reflects previewWindow onto the zoom bar's thumb position/width. Width is a
+// percentage of the full clip duration but floored to MIN_THUMB_PX so it's
+// grabbable; the left offset is then clamped against that (possibly wider) drawn
+// width so the thumb never spills past the end of the bar.
 function updateZoomBar() {
   var thumb = document.getElementById('zoomThumb');
-  if (!thumb || !analysis || !previewWindow || !analysis.duration) return;
-  var leftPct  = (previewWindow.start / analysis.duration) * 100;
-  var widthPct = (previewWindow.len   / analysis.duration) * 100;
-  thumb.style.left  = clampNum(leftPct, 0, 100) + '%';
-  thumb.style.width = clampNum(widthPct, (MIN_ZOOM_SEC / analysis.duration) * 100, 100) + '%';
+  var bar   = document.getElementById('zoomBar');
+  if (!thumb || !bar || !analysis || !previewWindow || !analysis.duration) return;
+  var barW = bar.getBoundingClientRect().width || 150;
+  var minPct = clampNum((MIN_THUMB_PX / barW) * 100, 0, 100);
+  var widthPct = clampNum((previewWindow.len / analysis.duration) * 100, minPct, 100);
+  var leftPct  = clampNum((previewWindow.start / analysis.duration) * 100, 0, Math.max(0, 100 - widthPct));
+  thumb.style.left  = leftPct + '%';
+  thumb.style.width = widthPct + '%';
 }
 
 // Redraw is coalesced to once per animation frame during a drag — recomputing
@@ -617,6 +636,124 @@ function zoomBy(factor) {
 var previewPlayheadRel = null; // clip-relative seconds of our last-known Premiere playhead position
 var playheadPollHandle = null; // rAF (or setTimeout fallback) handle while following continuous playback
 
+// True while the panel's Play button started Premiere's transport, so pause routes
+// back to it. (Playback the user starts directly in Premiere is followed but not
+// "owned" by the panel, so the panel won't pause it.)
+var panelStartedPlayback = false;
+
+// Generation token for the Premiere-playhead follow loop: bumping it retires any
+// running loop (used on stop and on re-analyze) without leaving a second loop alive.
+var _followGen = 0;
+var _lastFollowTicks = null;
+
+// ── In-panel audio (Web Audio) ──────────────────────────────────────────────
+//
+// Why CEP-based tools ("Beat Marker Pro" and the like) can play sound in the
+// panel and older UXP notes here said this one can't: CEP extensions run in a
+// full embedded Chromium, so <audio> and Web Audio just work. UXP runs a
+// stripped engine — its <audio> element is inert (createElement('audio') returns
+// a node without play()/pause()), which is why playback fell back to driving
+// Premiere's own transport. But we already hold the decoded PCM (analysis.waveform)
+// whenever a clip was read/transcoded, so if this UXP build exposes AudioContext
+// at all we can feed those samples straight to the speakers from the panel. It's
+// probed and cached like every other host API here; if AudioContext is absent we
+// silently keep the Premiere-transport path, so nothing regresses.
+
+var _audioCtx = null;
+var _audioCtxProbed = false;
+
+// Live in-panel playback: the running BufferSource plus the anchor used to derive
+// the current position from the context clock (start(0, offset) gives no
+// position readout of its own).
+var webAudio = { source: null, buffer: null, bufferFor: null, startCtxTime: 0, startOffset: 0, playing: false };
+
+function getAudioContext() {
+  if (_audioCtxProbed) return _audioCtx;
+  _audioCtxProbed = true;
+  var Ctor = (typeof AudioContext !== 'undefined' && AudioContext) ||
+             (typeof webkitAudioContext !== 'undefined' && webkitAudioContext) ||
+             (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) || null;
+  if (!Ctor) { console.log('[BM] no AudioContext in this UXP host — using Premiere transport for playback'); return null; }
+  try { _audioCtx = new Ctor(); console.log('[BM] AudioContext available — in-panel audio enabled'); }
+  catch (e) { console.log('[BM] AudioContext ctor threw:', e && e.message); _audioCtx = null; }
+  return _audioCtx;
+}
+
+// Builds (and caches per analysis) an AudioBuffer from the decoded PCM. The
+// waveform is already sliced to the clip's in/out, so buffer time == clip-relative
+// time == the preview's own time base.
+function getPlaybackBuffer(ctx) {
+  if (!analysis || !analysis.waveform || !analysis.waveform.samples || !analysis.waveform.samples.length) return null;
+  if (webAudio.buffer && webAudio.bufferFor === analysis) return webAudio.buffer;
+  var wf = analysis.waveform;
+  var buf;
+  try {
+    buf = ctx.createBuffer(1, wf.samples.length, wf.sampleRate);
+    var ch = buf.getChannelData(0);
+    if (wf.samples instanceof Float32Array && typeof ch.set === 'function') ch.set(wf.samples);
+    else for (var i = 0; i < wf.samples.length; i++) ch[i] = wf.samples[i];
+  } catch (e) { console.log('[BM] createBuffer failed:', e && e.message); return null; }
+  webAudio.buffer = buf;
+  webAudio.bufferFor = analysis;
+  return buf;
+}
+
+function stopInPanelSource() {
+  if (webAudio.source) {
+    try { webAudio.source.onended = null; webAudio.source.stop(); } catch (_) {}
+    try { webAudio.source.disconnect(); } catch (_) {}
+    webAudio.source = null;
+  }
+  webAudio.playing = false;
+}
+
+// (Re)starts in-panel playback from offsetSec (clip-relative). Returns false if
+// the buffer or the source couldn't be built, so the caller can fall back to the
+// Premiere transport within the same click.
+async function startInPanelPlayback(ctx, offsetSec) {
+  var buffer = getPlaybackBuffer(ctx);
+  if (!buffer) return false;
+  try { if (ctx.state === 'suspended' && typeof ctx.resume === 'function') await ctx.resume(); } catch (_) {}
+  stopInPanelSource();
+  var off = clampNum(offsetSec, 0, analysis.duration);
+  var src;
+  try {
+    src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.start(0, off);
+  } catch (e) { console.log('[BM] in-panel start failed:', e && e.message); return false; }
+  webAudio.source = src;
+  webAudio.startCtxTime = ctx.currentTime;
+  webAudio.startOffset = off;
+  webAudio.playing = true;
+  return true;
+}
+
+function inPanelPositionSec(ctx) {
+  return webAudio.startOffset + (ctx.currentTime - webAudio.startCtxTime);
+}
+
+function startInPanelPoll(ctx) {
+  stopPlayheadPoll();
+  function tick() {
+    var rel = inPanelPositionSec(ctx);
+    if (rel >= analysis.duration) {
+      previewPlayheadRel = analysis.duration;
+      stopInPanelSource();
+      stopPlayheadPoll();
+      document.getElementById('playBtn').textContent = '▶ Play';
+      redrawPreview();
+      return;
+    }
+    previewPlayheadRel = rel;
+    followPlayheadIntoView(rel);
+    redrawPreview();
+    playheadPollHandle = rafFn(tick);
+  }
+  playheadPollHandle = rafFn(tick);
+}
+
 var _setPositionSig = null;
 
 async function setSequencePosition(sequence, sequenceTimeSec) {
@@ -712,7 +849,50 @@ async function tryPauseSequencePlayback(sequence) {
   return false;
 }
 
+// Set true when a canvas mousedown turns into a pan drag, so the trailing click
+// event (which fires after mouseup) is swallowed instead of also seeking. Reset
+// on every fresh mousedown, so a click that never fires can't leave it stuck.
+var _canvasDragged = false;
+
+// Drag anywhere on the waveform to slide the visible window (grab-and-scroll:
+// dragging the content right reveals earlier audio). Disabled while a boundary is
+// armed so those clicks still set the anchor/range point. A press with no real
+// movement falls through to onCanvasClick as a seek.
+function onCanvasMouseDown(evt) {
+  if (!analysis || !previewWindow) return;
+  if (rangeArm || anchorArmed) return;
+  var canvas = evt.currentTarget;
+  var rect = canvas.getBoundingClientRect();
+  if (!rect || !rect.width) return;
+  if (typeof evt.preventDefault === 'function') evt.preventDefault();
+
+  _canvasDragged = false;
+  var startX = evt.clientX;
+  var startWinStart = previewWindow.start;
+  var duration = analysis.duration;
+
+  function onMove(mv) {
+    var dxPix = mv.clientX - startX;
+    if (!_canvasDragged && Math.abs(dxPix) < 3) return;
+    _canvasDragged = true;
+    var dxSec = (dxPix / rect.width) * previewWindow.len;
+    previewWindow.start = clampNum(startWinStart - dxSec, 0, Math.max(0, duration - previewWindow.len));
+    updateZoomBar();
+    scheduleDragRedraw();
+  }
+
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    if (_canvasDragged) redrawPreview();
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
 async function onCanvasClick(evt) {
+  if (_canvasDragged) { _canvasDragged = false; return; }
   if (!analysis || !previewWindow) return;
   var canvas = evt.currentTarget;
   var rect = canvas.getBoundingClientRect();
@@ -725,8 +905,23 @@ async function onCanvasClick(evt) {
 }
 
 async function seekTo(relSec) {
-  if (!analysis || !analysis.sequence) return;
+  if (!analysis) return;
   var clamped = clampNum(relSec, 0, analysis.duration);
+
+  // In-panel audio path: reposition the panel's own playback and keep Premiere's
+  // playhead loosely in sync too (a move, not a play, so no double audio).
+  var ctx = (analysis.waveform && analysis.waveform.samples) ? getAudioContext() : null;
+  if (ctx) {
+    previewPlayheadRel = clamped;
+    if (webAudio.playing) await startInPanelPlayback(ctx, clamped);
+    redrawPreview();
+    if (analysis.sequence) {
+      try { await setSequencePosition(analysis.sequence, analysis.clipInfo.start + clamped); } catch (_) {}
+    }
+    return;
+  }
+
+  if (!analysis.sequence) return;
   var moved = await setSequencePosition(analysis.sequence, analysis.clipInfo.start + clamped);
   if (moved) {
     previewPlayheadRel = clamped;
@@ -737,66 +932,118 @@ async function seekTo(relSec) {
 }
 
 async function togglePlayback() {
-  if (!analysis || !analysis.sequence) return;
+  if (!analysis) return;
   var playBtn = document.getElementById('playBtn');
-  var sequence = analysis.sequence;
 
-  if (playheadPollHandle == null) {
-    var jumpRel = previewPlayheadRel != null ? previewPlayheadRel : previewWindow.start;
+  // Pause whichever path we started.
+  if (webAudio.playing) {
+    var ctx2 = getAudioContext();
+    var elapsed = ctx2 ? inPanelPositionSec(ctx2) : (previewPlayheadRel || 0);
+    stopInPanelSource();
+    stopPlayheadPoll();
+    previewPlayheadRel = clampNum(elapsed, 0, analysis.duration);
+    playBtn.textContent = '▶ Play';
+    redrawPreview();
+    return;
+  }
+  if (panelStartedPlayback) {
+    if (analysis.sequence) await tryPauseSequencePlayback(analysis.sequence);
+    panelStartedPlayback = false;
+    playBtn.textContent = '▶ Play';
+    return;
+  }
+
+  var jumpRel = previewPlayheadRel != null ? previewPlayheadRel : previewWindow.start;
+
+  // Preferred: real sound from the panel via Web Audio, when we have decoded
+  // samples and this UXP host exposes AudioContext. Falls through to the Premiere
+  // transport if either is missing or the source won't start.
+  var ctx = (analysis.waveform && analysis.waveform.samples) ? getAudioContext() : null;
+  if (ctx) {
     playBtn.disabled = true;
-    var moved = await setSequencePosition(sequence, analysis.clipInfo.start + jumpRel);
-    if (!moved) {
-      log('Could not move Premiere\'s playhead — no working position-set API found.', 'error');
-      playBtn.disabled = false;
+    var ok = await startInPanelPlayback(ctx, jumpRel);
+    playBtn.disabled = false;
+    if (ok) {
+      previewPlayheadRel = jumpRel;
+      playBtn.textContent = '⏸ Pause';
+      startInPanelPoll(ctx);
+      log('Playing audio in the panel from ' + jumpRel.toFixed(1) + 's.', 'info');
       return;
     }
-    previewPlayheadRel = jumpRel;
-    redrawPreview();
+  }
 
-    var started = await tryStartSequencePlayback(sequence);
+  if (!analysis.sequence) { log('Nothing to play — no audio decoded and no sequence.', 'error'); return; }
+  var sequence = analysis.sequence;
+  playBtn.disabled = true;
+  var moved = await setSequencePosition(sequence, analysis.clipInfo.start + jumpRel);
+  if (!moved) {
+    log('Could not move Premiere\'s playhead — no working position-set API found.', 'error');
     playBtn.disabled = false;
-    if (started) {
-      playBtn.textContent = '⏸ Pause';
-      startPlayheadPoll(sequence);
-      log('Playing in Premiere from ' + jumpRel.toFixed(1) + 's.', 'info');
-    } else {
-      log('Continuous playback isn\'t scriptable in this Premiere version — moved Premiere\'s playhead to ' +
-        jumpRel.toFixed(1) + 's instead. Click elsewhere on the waveform to scrub further.', 'info');
-    }
-  } else {
-    stopPlayheadPoll();
-    await tryPauseSequencePlayback(sequence);
-    playBtn.textContent = '▶ Play';
+    return;
   }
-}
+  previewPlayheadRel = jumpRel;
+  redrawPreview();
 
-function startPlayheadPoll(sequence) {
-  stopPlayheadPoll();
-  function tick() {
-    sequence.getPlayerPosition().then(function (pos) {
-      var relSec = ticksToSeconds(pos.ticks) - analysis.clipInfo.start;
-      previewPlayheadRel = relSec;
-      if (relSec < 0 || relSec > analysis.duration) {
-        stopPlayheadPoll();
-        tryPauseSequencePlayback(sequence);
-        document.getElementById('playBtn').textContent = '▶ Play';
-        redrawPreview();
-        return;
-      }
-      followPlayheadIntoView(relSec);
-      redrawPreview();
-      playheadPollHandle = rafFn(tick);
-    }).catch(function (e) {
-      console.log('[BM] playhead poll failed:', e && e.message);
-      stopPlayheadPoll();
-    });
+  // The follow loop (always running) mirrors the moving playhead onto the preview
+  // whether or not we could script the transport start.
+  var started = await tryStartSequencePlayback(sequence);
+  playBtn.disabled = false;
+  if (started) {
+    panelStartedPlayback = true;
+    playBtn.textContent = '⏸ Pause';
+    log('Playing in Premiere from ' + jumpRel.toFixed(1) + 's — preview playhead will follow.', 'info');
+  } else {
+    log('Continuous playback isn\'t scriptable in this Premiere version — moved the playhead to ' +
+      jumpRel.toFixed(1) + 's. Press play in Premiere and the preview playhead will follow along.', 'info');
   }
-  playheadPollHandle = rafFn(tick);
 }
 
 function stopPlayheadPoll() {
   if (playheadPollHandle != null) { cafFn(playheadPollHandle); playheadPollHandle = null; }
 }
+
+// Polls Premiere's sequence playhead continuously (while an analysis is loaded)
+// and mirrors it onto the preview, so the playhead line tracks playback no matter
+// how it was started — the panel's Play button OR the user pressing play/scrubbing
+// in Premiere directly (which the panel gets no event for, hence polling). Cheap
+// when idle: the position only changes while something is actually playing, so a
+// redraw only happens on an actual move. Stops itself if getPlayerPosition isn't
+// available on this host. In-panel Web Audio, when it works, drives the playhead
+// from its own clock, so this defers to it.
+function startPremiereFollow() {
+  var gen = ++_followGen;
+  if (!analysis || !analysis.sequence) return;
+  _lastFollowTicks = null;
+  var seq = analysis.sequence;
+  (function loop() {
+    if (gen !== _followGen) return;
+    seq.getPlayerPosition().then(function (pos) {
+      if (gen !== _followGen) return;
+      var ticks = pos ? String(pos.ticks) : null;
+      if (ticks !== _lastFollowTicks && !webAudio.playing) {
+        _lastFollowTicks = ticks;
+        var relSec = ticksToSeconds(pos.ticks) - analysis.clipInfo.start;
+        if (relSec >= 0 && relSec <= analysis.duration) {
+          previewPlayheadRel = relSec;
+          followPlayheadIntoView(relSec);
+        } else {
+          previewPlayheadRel = null;
+          if (panelStartedPlayback && relSec > analysis.duration) {
+            tryPauseSequencePlayback(seq);
+            panelStartedPlayback = false;
+            document.getElementById('playBtn').textContent = '▶ Play';
+          }
+        }
+        redrawPreview();
+      }
+      setTimeout(loop, 100);
+    }).catch(function (e) {
+      console.log('[BM] playhead follow unavailable — not tracking Premiere:', e && e.message);
+    });
+  })();
+}
+
+function stopPremiereFollow() { _followGen++; }
 
 // Keeps the zoom window following the playhead during playback rather than
 // requiring manual re-panning as it plays past the visible range.

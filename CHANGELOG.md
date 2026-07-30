@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **In-panel audio playback** — when the host exposes Web Audio (`AudioContext`),
+  Play now sends the already-decoded PCM straight to the speakers from the panel
+  instead of driving Premiere's transport, so you hear the clip without moving the
+  timeline. CEP extensions get this for free (full embedded Chromium); UXP's
+  `<audio>` element is inert, so this feeds the decoded samples through
+  `AudioContext` instead, probed and cached like the other host APIs. If no
+  `AudioContext` is available it silently falls back to the Premiere-transport
+  behaviour. Seeking/pausing reposition the panel playback directly
 - **Placement range** — mark only a section of a clip instead of the whole thing.
   Arm **Set In** / **Set Out** in the preview toolbar and click the waveform to set
   either boundary (either side is optional: In-only marks from there to the end,
@@ -27,9 +35,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generator that both the preview and Place Markers draw from, keeping them identical
 
 ### Changed
+- The preview playhead now follows Premiere's playback continuously, however it was
+  started — the panel's Play button **or** pressing play / scrubbing in Premiere
+  directly. Previously it only tracked playback the panel itself started, so on
+  hosts where the transport isn't scriptable the playhead never moved. A lightweight
+  poll mirrors the sequence playhead onto the preview and only redraws on an actual
+  move, so it stays cheap when idle
 - Preview toolbar polish: the zoom `+`/`−` buttons are now compact icon buttons; the
   text mini-buttons share a consistent height and no longer wrap; and the zoom bar is
   taller and higher-contrast (so it's easier to see) while taking less horizontal width
+- **Drag the waveform to pan** — grab anywhere on the preview and drag to slide the
+  visible window (a press without movement still seeks). Makes navigating a zoomed-in
+  clip far less fiddly than reaching for the zoom bar every time
+- Zoom bar is easier to grab: the thumb now has a minimum on-screen width so it stays
+  grabbable even when zoomed far into a long clip (the actual zoom is unchanged — only
+  the thumb's drawn width is floored, and its position is clamped so it never overflows
+  the bar), and the resize end-caps are restyled as Premiere-like rounded grip handles
 
 ## [0.2.0] - 2026-07-22
 

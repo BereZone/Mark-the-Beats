@@ -19,17 +19,18 @@ Ensure **Adobe Media Encoder** is installed — it handles the audio export step
    and draws a preview: the waveform with a tick at every detected/computed beat position.
    No markers are placed yet.
 4. Use the preview toolbar to inspect it closely:
-   - The waveform starts zoomed to the first 4 seconds. The bar next to the Play button
-     works like Premiere's timeline zoom bar: drag the middle to pan, drag either edge
-     (the brighter end caps) to zoom in/out, or click the bare track to jump there.
-     The `+`/`−` buttons zoom in/out centered on the current view
+   - The waveform starts zoomed to the first 4 seconds. **Drag the waveform itself**
+     to slide the visible window, or use the bar next to the Play button like
+     Premiere's timeline zoom bar: drag the middle to pan, drag either rounded end
+     handle to zoom in/out, or click the bare track to jump there. The `+`/`−`
+     buttons zoom in/out centered on the current view
    - Mouse-wheel zoom isn't available — this UXP host doesn't forward scroll-wheel
      input into the panel at all
-   - Click anywhere on the waveform, or click **▶ Play**, to move Premiere's own
-     playhead there — sound comes from Premiere itself, not the panel. Whether
-     Premiere can be told to start continuous playback from a script depends on
-     the Premiere version; if it can't, Play still jumps the playhead to that
-     position instead — see Known limitations
+   - Click **▶ Play** to hear the clip. When the host supports Web Audio the sound
+     plays from the panel itself (using the audio already decoded for detection),
+     and clicking the waveform seeks that playback. If Web Audio isn't available it
+     falls back to driving Premiere's own transport/playhead instead — see Known
+     limitations
    - **◎ Set Beat 1** then click the downbeat in the waveform to lock the grid's
      phase to it — the grid rebuilds at the current tempo so a beat lands exactly
      there (drawn as a gold flagged line). Use it when the auto-detected grid is a
@@ -53,14 +54,18 @@ Ensure **Adobe Media Encoder** is installed — it handles the audio export step
 
 ## Known limitations
 
-- Playback moves Premiere's own sequence playhead rather than playing audio inside
-  the panel — UXP's webview here has no functional `<audio>` element at all
-  (`document.createElement('audio')` returns a node without even `play()`/`pause()`).
-  Whether continuous playback can be *started* from a script is unconfirmed and
-  depends on the Premiere version — a few candidate API calls are tried and verified
-  by checking whether the playhead actually advances; if none work, Play still moves
-  Premiere's playhead to the clicked/previewed position (a scrub, not a full
-  transport-controlled play) rather than claiming playback started.
+- In-panel playback depends on the host exposing Web Audio (`AudioContext`). When
+  it does, Play feeds the already-decoded PCM to the speakers from the panel. CEP
+  extensions always have this (they run a full embedded Chromium); UXP's webview
+  here has an inert `<audio>` element (`document.createElement('audio')` returns a
+  node without even `play()`/`pause()`), so Web Audio is the only route to in-panel
+  sound — used when present, and probed/verified rather than assumed. If no
+  `AudioContext` is available, Play falls back to driving Premiere's own sequence
+  transport: continuous playback is tried via a few candidate API calls and
+  verified by checking whether the playhead actually advances; if none work, Play
+  just moves Premiere's playhead to the clicked/previewed position (a scrub, not a
+  full transport-controlled play) rather than claiming playback started.
+  Manual-BPM analyses decode no audio, so they always use the Premiere path.
 - WAV and MP3 clips are read directly — no AME dependency for those formats.
 - Other formats (AAC, MOV, etc.) still require Adobe Media Encoder for the transcode-to-WAV step.
 - AME must be available to Premiere's encoder bridge; if it isn't running, start it manually first.

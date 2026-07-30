@@ -154,12 +154,17 @@
 
     #zoomBar.disabled { opacity: 0.4; }
 
+    /* min-width keeps the thumb grabbable even when the visible window is a tiny
+       fraction of a long clip — updateZoomBar clamps the left offset to match, so
+       the actual zoom stays as narrow as the user set it; only the thumb's drawn
+       width has a floor. */
     #zoomThumb {
       position: absolute;
       top: 1px;
       bottom: 1px;
       left: 0;
       width: 100%;
+      min-width: 30px;
       background: #7d7d7d;
       border-radius: 8px;
       cursor: grab;
@@ -168,21 +173,24 @@
 
     #zoomThumb:active { cursor: grabbing; background: #8f8f8f; }
 
-    /* Visible end-caps, brighter than the thumb body, so the resize zones read
-       as distinct grab points rather than blending into a featureless bar. */
+    /* Premiere-style end handles: rounded grip caps that sit proud of the thumb
+       body (lighter fill, an inset seam, and a subtle raised edge) so the resize
+       zones read as distinct, grabbable ends rather than a flat bar. */
     .zoom-handle {
       position: absolute;
       top: 0;
       bottom: 0;
-      width: 8px;
-      background: #b4b4b4;
+      width: 12px;
+      background: #b9b9b9;
       cursor: ew-resize;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
     }
 
-    .zoom-handle:hover { background: #cccccc; }
+    .zoom-handle:hover  { background: #d6d6d6; }
+    .zoom-handle:active { background: #eaeaea; }
 
-    .zoom-handle-left  { left: 0; border-radius: 8px 0 0 8px; }
-    .zoom-handle-right { right: 0; border-radius: 0 8px 8px 0; }
+    .zoom-handle-left  { left: 0;  border-radius: 8px 3px 3px 8px; box-shadow: inset 1px 0 0 rgba(255,255,255,0.3), inset -1px 0 0 rgba(0,0,0,0.25); }
+    .zoom-handle-right { right: 0; border-radius: 3px 8px 8px 3px; box-shadow: inset -1px 0 0 rgba(255,255,255,0.3), inset 1px 0 0 rgba(0,0,0,0.25); }
 
     .status-header {
       display: flex;
