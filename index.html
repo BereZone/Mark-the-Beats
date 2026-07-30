@@ -101,6 +101,23 @@
       cursor: pointer;
     }
 
+    /* The playhead is a CSS overlay, not drawn on the canvas — moving it is a
+       cheap style change, so tracking playback no longer forces a full waveform
+       repaint (which flickered in this canvas). The canvas only redraws when the
+       window actually scrolls. */
+    #previewWrap { position: relative; width: 100%; }
+    #previewPlayhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 2px;
+      margin-left: -1px;
+      background: #ffffff;
+      pointer-events: none;
+      display: none;
+    }
+
     .preview-info {
       color: #999;
       font-size: 11px;
@@ -295,7 +312,10 @@
 
     <div class="field-group">
       <label for="previewCanvas">Preview (click to seek)</label>
-      <canvas id="previewCanvas"></canvas>
+      <div id="previewWrap">
+        <canvas id="previewCanvas"></canvas>
+        <div id="previewPlayhead"></div>
+      </div>
       <div class="preview-toolbar">
         <button type="button" id="playBtn" class="mini-btn" disabled>▶ Play</button>
         <button type="button" id="zoomOutBtn" class="mini-btn zoom-step" disabled title="Zoom out">&minus;</button>

@@ -38,19 +38,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The preview playhead now follows Premiere's playback continuously, however it was
   started — the panel's Play button **or** pressing play / scrubbing in Premiere
   directly. Previously it only tracked playback the panel itself started, so on
-  hosts where the transport isn't scriptable the playhead never moved. A lightweight
-  poll mirrors the sequence playhead onto the preview and only redraws on an actual
-  move, so it stays cheap when idle
+  hosts where the transport isn't scriptable the playhead never moved. A poll mirrors
+  the sequence playhead onto the preview; its cadence is adaptive — a slow heartbeat
+  when nothing is moving, fast only while the playhead is advancing, and dormant while
+  the panel is hidden — so it doesn't burden Premiere by hammering the scripting bridge
+  when it's just sitting open, and it only repaints on an actual move
+- The preview window now scrolls to follow playback — it stays put while the playhead
+  sweeps across it and jumps forward once the playhead passes ~85% (resuming near 30%),
+  clamping in place at the clip's start/end. The playhead itself moves smoothly the
+  whole time as a CSS overlay, so following no longer repaints the waveform every frame
 - Preview toolbar polish: the zoom `+`/`−` buttons are now compact icon buttons; the
   text mini-buttons share a consistent height and no longer wrap; and the zoom bar is
   taller and higher-contrast (so it's easier to see) while taking less horizontal width
 - **Drag the waveform to pan** — grab anywhere on the preview and drag to slide the
   visible window (a press without movement still seeks). Makes navigating a zoomed-in
   clip far less fiddly than reaching for the zoom bar every time
+- The zoom `+`/`−` buttons now center on the playhead (when there is one), so you can
+  zoom straight in on the current position instead of on the middle of the view
 - Zoom bar is easier to grab: the thumb now has a minimum on-screen width so it stays
   grabbable even when zoomed far into a long clip (the actual zoom is unchanged — only
   the thumb's drawn width is floored, and its position is clamped so it never overflows
   the bar), and the resize end-caps are restyled as Premiere-like rounded grip handles
+
+### Fixed
+- The preview no longer flashes/reloads during playback. The playhead used to be drawn
+  on the canvas, so moving it each tick forced a full waveform repaint, which this
+  canvas shows mid-draw as a dark flicker. The playhead is now a CSS overlay that moves
+  without touching the canvas, and the waveform is repainted only when the window
+  actually scrolls. The canvas backing store is also resized only when its dimensions
+  change (it was being reallocated — and cleared — on every redraw)
 
 ## [0.2.0] - 2026-07-22
 

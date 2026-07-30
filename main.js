@@ -370,6 +370,7 @@ function redrawPreview() {
   var previewBeats = computeMarkerBeats();
 
   drawWaveformPreview(analysis.waveform, analysis.duration, previewBeats, colorIndex, previewWindow, previewPlayheadRel, analysis.anchor, analysis.rangeStart, analysis.rangeEnd);
+  updatePlayheadOverlay();
 
   var info = document.getElementById('previewInfo');
   if (info) {
@@ -379,6 +380,11 @@ function redrawPreview() {
   }
 }
 
+// Set once if ctx.scale() throws on this host, so we stop retrying it every frame
+// (retrying would reallocate the backing store each redraw — the very flicker we
+// avoid below).
+var _canvasScaleFailed = false;
+
 function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, playheadRel, anchorRel, rangeStart, rangeEnd) {
   var canvas = document.getElementById('previewCanvas');
   if (!canvas || !durationSec || !win) return;
@@ -387,24 +393,23 @@ function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, p
   var cssHeight = canvas.clientHeight || 64;
   var ctx = canvas.getContext('2d');
 
-  // Setting canvas.width/height resets the backing store and its transform to
-  // identity, so a fresh scale() per redraw is correct rather than compounding.
-  // UXP's canvas implementation doesn't support setTransform (only scale), and
-  // may lack scale too on some builds — fall back to a 1x (CSS-pixel) backing
-  // store rather than leaving a mismatched half-scaled canvas.
+  // Only resize the backing store when the target size actually changes. Assigning
+  // canvas.width/height reallocates and clears it (and resets the transform), so
+  // doing it every redraw made the canvas flash dark during playback, where we
+  // repaint ~10×/sec. When the size is unchanged we just repaint over the existing
+  // store; the scale() applied on the last resize persists. UXP's canvas has no
+  // setTransform (only scale), and may lack scale too — fall back to a 1× store.
   var dpr = window.devicePixelRatio || 1;
-  var scaled = false;
-  if (dpr !== 1 && typeof ctx.scale === 'function') {
-    try {
-      canvas.width  = Math.round(cssWidth * dpr);
-      canvas.height = Math.round(cssHeight * dpr);
-      ctx.scale(dpr, dpr);
-      scaled = true;
-    } catch (_) { scaled = false; }
-  }
-  if (!scaled) {
-    canvas.width  = cssWidth;
-    canvas.height = cssHeight;
+  var useDpr = dpr !== 1 && !_canvasScaleFailed && typeof ctx.scale === 'function';
+  var wantW = useDpr ? Math.round(cssWidth * dpr)  : cssWidth;
+  var wantH = useDpr ? Math.round(cssHeight * dpr) : cssHeight;
+  if (canvas.width !== wantW || canvas.height !== wantH) {
+    canvas.width  = wantW;
+    canvas.height = wantH;
+    if (useDpr) {
+      try { ctx.scale(dpr, dpr); }
+      catch (_) { _canvasScaleFailed = true; canvas.width = cssWidth; canvas.height = cssHeight; }
+    }
   }
 
   ctx.fillStyle = '#202020';
@@ -489,17 +494,30 @@ function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, p
     ctx.fillRect(ax, 0, 2, cssHeight);
     ctx.fillRect(ax - 3, 0, 8, 5);
   }
+  // The playhead is drawn as the #previewPlayhead overlay (see updatePlayheadOverlay),
+  // not on the canvas, so it can move during playback without repainting the waveform.
+}
 
-  if (playheadRel != null && playheadRel >= winStart && playheadRel <= winEnd) {
-    ctx.fillStyle = '#ffffff';
-    var px = Math.round(((playheadRel - winStart) / winLen) * cssWidth);
-    ctx.fillRect(px, 0, 2, cssHeight);
+// Positions the playhead overlay for the current window; hides it when there's no
+// playhead or it's scrolled out of view. Pure CSS, so it's safe to call every tick.
+function updatePlayheadOverlay() {
+  var el = document.getElementById('previewPlayhead');
+  if (!el) return;
+  if (previewPlayheadRel == null || !previewWindow || !(previewWindow.len > 0)) {
+    el.style.display = 'none';
+    return;
   }
+  var frac = (previewPlayheadRel - previewWindow.start) / previewWindow.len;
+  if (frac < 0 || frac > 1) { el.style.display = 'none'; return; }
+  el.style.left = (frac * 100) + '%';
+  el.style.display = 'block';
 }
 
 function showPreviewMessage(msg) {
   var info = document.getElementById('previewInfo');
   if (info) info.textContent = msg;
+  var ph = document.getElementById('previewPlayhead');
+  if (ph) ph.style.display = 'none';
   var canvas = document.getElementById('previewCanvas');
   if (!canvas) return;
   var cssWidth  = canvas.clientWidth  || 280;
@@ -607,14 +625,15 @@ function startZoomBarDrag(evt, mode) {
 
 // Discrete zoom for the +/- buttons — this UXP host never dispatches 'wheel'
 // events into the panel DOM (confirmed live: click/mousedown are forwarded,
-// wheel isn't), so there's no cursor position to anchor to here; zooms toward
-// the window's current center instead.
+// wheel isn't), so there's no cursor position to anchor to. Zooms centered on the
+// playhead when there is one (so you can zoom straight in on the current position),
+// falling back to the window's center before anything has played.
 function zoomBy(factor) {
   if (!analysis || !previewWindow) return;
-  var center = previewWindow.start + previewWindow.len / 2;
+  var focus = (previewPlayheadRel != null) ? previewPlayheadRel : (previewWindow.start + previewWindow.len / 2);
   var newLen = clampNum(previewWindow.len * factor, MIN_ZOOM_SEC, analysis.duration);
   previewWindow.len = newLen;
-  previewWindow.start = clampNum(center - newLen / 2, 0, Math.max(0, analysis.duration - newLen));
+  previewWindow.start = clampNum(focus - newLen / 2, 0, Math.max(0, analysis.duration - newLen));
   updateZoomBar();
   redrawPreview();
 }
@@ -747,8 +766,7 @@ function startInPanelPoll(ctx) {
       return;
     }
     previewPlayheadRel = rel;
-    followPlayheadIntoView(rel);
-    redrawPreview();
+    if (followPlayheadIntoView(rel)) redrawPreview(); else updatePlayheadOverlay();
     playheadPollHandle = rafFn(tick);
   }
   playheadPollHandle = rafFn(tick);
@@ -914,7 +932,7 @@ async function seekTo(relSec) {
   if (ctx) {
     previewPlayheadRel = clamped;
     if (webAudio.playing) await startInPanelPlayback(ctx, clamped);
-    redrawPreview();
+    updatePlayheadOverlay();
     if (analysis.sequence) {
       try { await setSequencePosition(analysis.sequence, analysis.clipInfo.start + clamped); } catch (_) {}
     }
@@ -925,7 +943,7 @@ async function seekTo(relSec) {
   var moved = await setSequencePosition(analysis.sequence, analysis.clipInfo.start + clamped);
   if (moved) {
     previewPlayheadRel = clamped;
-    redrawPreview();
+    updatePlayheadOverlay();
   } else {
     log('Could not move Premiere\'s playhead — no working position-set API found.', 'error');
   }
@@ -943,7 +961,7 @@ async function togglePlayback() {
     stopPlayheadPoll();
     previewPlayheadRel = clampNum(elapsed, 0, analysis.duration);
     playBtn.textContent = '▶ Play';
-    redrawPreview();
+    updatePlayheadOverlay();
     return;
   }
   if (panelStartedPlayback) {
@@ -982,7 +1000,7 @@ async function togglePlayback() {
     return;
   }
   previewPlayheadRel = jumpRel;
-  redrawPreview();
+  updatePlayheadOverlay();
 
   // The follow loop (always running) mirrors the moving playhead onto the preview
   // whether or not we could script the transport start.
@@ -1002,14 +1020,19 @@ function stopPlayheadPoll() {
   if (playheadPollHandle != null) { cafFn(playheadPollHandle); playheadPollHandle = null; }
 }
 
-// Polls Premiere's sequence playhead continuously (while an analysis is loaded)
-// and mirrors it onto the preview, so the playhead line tracks playback no matter
-// how it was started — the panel's Play button OR the user pressing play/scrubbing
-// in Premiere directly (which the panel gets no event for, hence polling). Cheap
-// when idle: the position only changes while something is actually playing, so a
-// redraw only happens on an actual move. Stops itself if getPlayerPosition isn't
-// available on this host. In-panel Web Audio, when it works, drives the playhead
-// from its own clock, so this defers to it.
+// Mirrors Premiere's sequence playhead onto the preview so the playhead tracks
+// playback however it started — the panel's Play button OR play/scrub in Premiere
+// directly (which the panel gets no event for, hence polling). Each poll is a call
+// across the UXP↔Premiere scripting bridge, which is not free, so the cadence is
+// adaptive: a slow heartbeat when nothing is moving, fast only while the playhead
+// is actually advancing, and it goes dormant entirely while the panel is hidden.
+// This keeps it from dragging Premiere down when it's just sitting open. Stops
+// itself if getPlayerPosition isn't available; in-panel Web Audio, when it works,
+// drives the playhead from its own clock, so this defers to it.
+var FOLLOW_ACTIVE_MS = 90;   // responsive while the playhead is moving
+var FOLLOW_IDLE_MS   = 750;  // gentle heartbeat that catches playback starting
+var FOLLOW_HIDDEN_MS = 2000; // barely ticking while the panel isn't visible
+
 function startPremiereFollow() {
   var gen = ++_followGen;
   if (!analysis || !analysis.sequence) return;
@@ -1017,15 +1040,18 @@ function startPremiereFollow() {
   var seq = analysis.sequence;
   (function loop() {
     if (gen !== _followGen) return;
+    // Don't touch the bridge while the panel is hidden — nothing to show.
+    if (typeof document !== 'undefined' && document.hidden) { setTimeout(loop, FOLLOW_HIDDEN_MS); return; }
     seq.getPlayerPosition().then(function (pos) {
       if (gen !== _followGen) return;
       var ticks = pos ? String(pos.ticks) : null;
-      if (ticks !== _lastFollowTicks && !webAudio.playing) {
+      var moved = ticks !== _lastFollowTicks;
+      if (moved && !webAudio.playing) {
         _lastFollowTicks = ticks;
         var relSec = ticksToSeconds(pos.ticks) - analysis.clipInfo.start;
         if (relSec >= 0 && relSec <= analysis.duration) {
           previewPlayheadRel = relSec;
-          followPlayheadIntoView(relSec);
+          if (followPlayheadIntoView(relSec)) redrawPreview(); else updatePlayheadOverlay();
         } else {
           previewPlayheadRel = null;
           if (panelStartedPlayback && relSec > analysis.duration) {
@@ -1033,10 +1059,12 @@ function startPremiereFollow() {
             panelStartedPlayback = false;
             document.getElementById('playBtn').textContent = '▶ Play';
           }
+          updatePlayheadOverlay();
         }
-        redrawPreview();
       }
-      setTimeout(loop, 100);
+      // Fast only while something is actually playing; otherwise idle heartbeat.
+      var active = moved || webAudio.playing || panelStartedPlayback;
+      setTimeout(loop, active ? FOLLOW_ACTIVE_MS : FOLLOW_IDLE_MS);
     }).catch(function (e) {
       console.log('[BM] playhead follow unavailable — not tracking Premiere:', e && e.message);
     });
@@ -1045,14 +1073,26 @@ function startPremiereFollow() {
 
 function stopPremiereFollow() { _followGen++; }
 
-// Keeps the zoom window following the playhead during playback rather than
-// requiring manual re-panning as it plays past the visible range.
+// Scrolls the zoom window to follow playback, and returns true only when it
+// actually moved the window (so the caller repaints the waveform only then — the
+// playhead itself moves via the cheap overlay every tick regardless). The window
+// stays put while the playhead sweeps across it and only jumps forward once the
+// playhead passes ~85%, resuming from ~30%, so the expensive canvas redraw happens
+// roughly once per window-width of playback instead of every frame. Near the
+// clip's start/end it clamps in place and the playhead travels to the edge.
 function followPlayheadIntoView(relSec) {
-  if (!previewWindow || !analysis) return;
-  if (relSec < previewWindow.start || relSec > previewWindow.start + previewWindow.len) {
-    previewWindow.start = clampNum(relSec, 0, Math.max(0, analysis.duration - previewWindow.len));
-    updateZoomBar();
+  if (!previewWindow || !analysis) return false;
+  var len = previewWindow.len;
+  var maxStart = Math.max(0, analysis.duration - len);
+  if (relSec < previewWindow.start || relSec >= previewWindow.start + len * 0.85) {
+    var target = clampNum(relSec - len * 0.3, 0, maxStart);
+    if (Math.abs(target - previewWindow.start) > 1e-4) {
+      previewWindow.start = target;
+      updateZoomBar();
+      return true;
+    }
   }
+  return false;
 }
 
 async function runClearMarkers() {
