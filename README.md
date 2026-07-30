@@ -34,6 +34,11 @@ Ensure **Adobe Media Encoder** is installed — it handles the audio export step
      phase to it — the grid rebuilds at the current tempo so a beat lands exactly
      there (drawn as a gold flagged line). Use it when the auto-detected grid is a
      hair out of phase with the real downbeat; **Clear anchor** reverts
+   - **⟤ Set In** / **Set Out ⟥** then click the waveform to mark only a section
+     of the clip — markers are placed only between the In and Out points (either
+     is optional: set just In to mark from there to the end, or just Out for the
+     start up to there). The excluded stretch is dimmed in the preview; **Clear
+     range** goes back to marking the whole clip
 5. Adjust settings and watch the preview update live, with no need to re-analyze:
    - **BPM** — leave blank for auto-detect, or type a value; click **Auto** to clear it and
      revert to the detected BPM
@@ -43,7 +48,8 @@ Ensure **Adobe Media Encoder** is installed — it handles the audio export step
    - **Marker color** — applied to each marker when placed
    - **Marker name prefix** — text before the beat number, e.g. `Beat 1`, `Beat 2`…
 6. When the preview looks right, click **Place Markers** to commit clip markers to the
-   clip that was analyzed.
+   clip that was analyzed. **Undo Placed Markers** removes just that last batch (leaving
+   any pre-existing markers), while **Clear Markers on Clip** removes every marker.
 
 ## Known limitations
 

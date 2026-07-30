@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Placement range** — mark only a section of a clip instead of the whole thing.
+  Arm **Set In** / **Set Out** in the preview toolbar and click the waveform to set
+  either boundary (either side is optional: In-only marks from there to the end,
+  Out-only from the start to there). The excluded stretches are dimmed in the
+  preview and **Clear range** reverts to the whole clip. It filters the same
+  beats-per-marker generator the preview and Place Markers share, so the dimmed
+  beats are exactly the ones that won't be committed
+- **Undo Placed Markers** button — removes only the markers created by the most
+  recent Place Markers run, leaving any markers that were already on the clip intact
+  (unlike Clear Markers on Clip, which removes everything). The batch is tracked by
+  the marker handles returned at placement; the button enables after a placement and
+  disables once undone or once the clip is cleared
 - Sub-beat subdivisions in the "Place marker every" control — **½ beat (8th notes)**
   and **¼ beat (16th notes)** place markers denser than one-per-beat, aligned to the
   beat grid (and to the downbeat anchor when set). The interval is now a

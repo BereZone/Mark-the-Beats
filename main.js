@@ -13,6 +13,11 @@ var TICKS_PER_SECOND = 254016000000;
 // selection query, so markers always land on the clip that was actually previewed.
 var analysis = null;
 
+// The most recent Place Markers batch: { mc, markers } — the markers collection
+// and the handles created, so Undo can remove exactly those and nothing else.
+// Null when there's nothing to undo.
+var lastPlacement = null;
+
 var PREVIEW_COLORS = {
   '-1': '#4a9ef7', // Default -> accent blue
   '0':  '#5cb85c', // Green
@@ -37,6 +42,11 @@ var previewWindow = null;
 // True while "Set Beat 1" is armed: the next waveform click sets analysis.anchor
 // instead of seeking.
 var anchorArmed = false;
+
+// 'in' | 'out' while a range boundary is armed: the next waveform click sets that
+// end of the placement range (analysis.rangeStart / rangeEnd) instead of seeking.
+// null when nothing is armed.
+var rangeArm = null;
 
 // requestAnimationFrame isn't guaranteed in UXP's panel webview (canvas already
 // turned out to be missing standard APIs there) — fall back to a plain timer.
@@ -80,10 +90,21 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('previewCanvas').addEventListener('click', onCanvasClick);
   document.getElementById('anchorBtn').addEventListener('click', toggleAnchorArm);
   document.getElementById('anchorClearBtn').addEventListener('click', clearAnchor);
+  document.getElementById('rangeInBtn').addEventListener('click', function () { toggleRangeArm('in'); });
+  document.getElementById('rangeOutBtn').addEventListener('click', function () { toggleRangeArm('out'); });
+  document.getElementById('rangeClearBtn').addEventListener('click', clearRange);
   // Confirmed live: this UXP host never dispatches 'wheel' events into the panel
   // DOM at all (click/mousedown are forwarded, wheel isn't — a gap in the native
   // embedding, not a JS-side binding issue, so no event-registration trick fixes
   // it). Zoom is click/drag-only: the zoom bar's edge handles, or the +/− buttons.
+  document.getElementById('undoBtn').addEventListener('click', function () {
+    var btn = document.getElementById('undoBtn');
+    btn.disabled = true;
+    runUndoPlaceMarkers().finally(function () {
+      // Re-enable only if the batch wasn't fully undone; a clean undo clears it.
+      btn.disabled = !lastPlacement;
+    });
+  });
   document.getElementById('clearMarkersBtn').addEventListener('click', function () {
     var btn = document.getElementById('clearMarkersBtn');
     btn.disabled = true;
@@ -156,9 +177,11 @@ async function runAnalyze() {
       clipInfo: clipInfo, sequence: sequence, project: project,
       sourceStart: sourceStart, duration: duration,
       bpm: bpm, naturalBeats: allBeats, allBeats: allBeats,
-      anchor: null, detected: detected, waveform: waveform
+      anchor: null, rangeStart: null, rangeEnd: null,
+      detected: detected, waveform: waveform
     };
     anchorArmed = false;
+    rangeArm = null;
     applyGrid();
 
     previewWindow = { start: 0, len: Math.min(DEFAULT_ZOOM_SEC, duration) };
@@ -166,6 +189,7 @@ async function runAnalyze() {
 
     document.getElementById('placeBtn').disabled = false;
     updateAnchorUi();
+    updateRangeUi();
     document.getElementById('zoomBar').classList.remove('disabled');
     document.getElementById('zoomInBtn').disabled = false;
     document.getElementById('zoomOutBtn').disabled = false;
@@ -196,7 +220,9 @@ function resetPreviewControls() {
   playBtn.disabled = true;
   playBtn.textContent = '▶ Play';
   anchorArmed = false;
+  rangeArm = null;
   updateAnchorUi();
+  updateRangeUi();
 }
 
 // Commits the cached analysis to clip markers on the clip that was analyzed —
@@ -225,19 +251,29 @@ async function runPlaceMarkers() {
     var count = 0;
 
     // Same generator the preview draws from, so placement matches the preview exactly.
+    // Each created marker is kept so Undo can remove exactly this batch.
+    var placed = [];
     var markerBeats = computeMarkerBeats();
     for (var i = 0; i < markerBeats.length; i++) {
       var sourceTimeSec = sourceStart + markerBeats[i];
       if (sourceTimeSec < 0) continue;
       var marker = await createClipMarker(project, sequence, markersCollection, sourceTimeSec, prefix + ' ' + (count + 1));
       count++;
-      if (colorIndex >= 0 && marker) await setMarkerColor(project, marker, colorIndex);
+      if (marker) {
+        placed.push(marker);
+        if (colorIndex >= 0) await setMarkerColor(project, marker, colorIndex);
+      }
     }
 
     var afterCount = await countMarkers(markersCollection);
     if (beforeCount >= 0 && afterCount >= 0) {
       log('Markers on clip: ' + beforeCount + ' → ' + afterCount, 'info');
     }
+
+    // Remember this batch for Undo (only markers we could capture a handle to).
+    lastPlacement = placed.length ? { mc: markersCollection, markers: placed } : null;
+    document.getElementById('undoBtn').disabled = !lastPlacement;
+
     log('Done — placed ' + count + ' markers at ' + analysis.bpm.toFixed(1) + ' BPM.', 'success');
 
   } catch (err) {
@@ -302,10 +338,17 @@ function computeMarkerBeats() {
   // point at or after 0 so sub-beat markers stay aligned to the beats.
   var phase = analysis.allBeats.length ? analysis.allBeats[0] : 0;
   var start = ((phase % spacing) + spacing) % spacing;
+  // Placement range: null endpoints mean "clip start" / "clip end", so a range
+  // with only one side set still bounds placement (e.g. In only = In→end). The
+  // final marker time (offset applied) is what's tested, so the marker's actual
+  // position is what stays inside the range.
+  var lo = analysis.rangeStart != null ? analysis.rangeStart : 0;
+  var hi = analysis.rangeEnd   != null ? analysis.rangeEnd   : analysis.duration;
   var out = [];
   for (var t = start; t < analysis.duration + 1e-9; t += spacing) {
     var tt = t + offsetSec;
     if (tt < 0 || tt > analysis.duration) continue;
+    if (tt < lo - 1e-9 || tt > hi + 1e-9) continue;
     out.push(tt);
   }
   return out;
@@ -317,7 +360,7 @@ function redrawPreview() {
 
   var previewBeats = computeMarkerBeats();
 
-  drawWaveformPreview(analysis.waveform, analysis.duration, previewBeats, colorIndex, previewWindow, previewPlayheadRel, analysis.anchor);
+  drawWaveformPreview(analysis.waveform, analysis.duration, previewBeats, colorIndex, previewWindow, previewPlayheadRel, analysis.anchor, analysis.rangeStart, analysis.rangeEnd);
 
   var info = document.getElementById('previewInfo');
   if (info) {
@@ -327,7 +370,7 @@ function redrawPreview() {
   }
 }
 
-function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, playheadRel, anchorRel) {
+function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, playheadRel, anchorRel, rangeStart, rangeEnd) {
   var canvas = document.getElementById('previewCanvas');
   if (!canvas || !durationSec || !win) return;
 
@@ -390,6 +433,32 @@ function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, p
   } else {
     ctx.fillStyle = '#4a4a4a';
     ctx.fillRect(0, midY, cssWidth, 1);
+  }
+
+  // Placement range: dim the excluded parts of the window and draw green In/Out
+  // boundary lines. Only drawn when a range is actually set (either side). The
+  // dimming makes it obvious at a glance which stretch of the clip will get
+  // markers, since the beat ticks below are already filtered to the range.
+  if (rangeStart != null || rangeEnd != null) {
+    var relToX = function (rel) { return ((rel - winStart) / winLen) * cssWidth; };
+    var lo = rangeStart != null ? rangeStart : 0;
+    var hi = rangeEnd   != null ? rangeEnd   : durationSec;
+    ctx.fillStyle = 'rgba(16,16,16,0.6)';
+    var loX = clampNum(relToX(lo), 0, cssWidth);
+    var hiX = clampNum(relToX(hi), 0, cssWidth);
+    if (loX > 0)        ctx.fillRect(0, 0, loX, cssHeight);
+    if (hiX < cssWidth) ctx.fillRect(hiX, 0, cssWidth - hiX, cssHeight);
+    ctx.fillStyle = '#3fae6b';
+    if (rangeStart != null && lo >= winStart && lo <= winEnd) {
+      var sx = Math.round(relToX(lo));
+      ctx.fillRect(sx, 0, 2, cssHeight);
+      ctx.fillRect(sx, 0, 6, 5);
+    }
+    if (rangeEnd != null && hi >= winStart && hi <= winEnd) {
+      var ex = Math.round(relToX(hi));
+      ctx.fillRect(ex, 0, 2, cssHeight);
+      ctx.fillRect(ex - 4, 0, 6, 5);
+    }
   }
 
   var tickColor = PREVIEW_COLORS[String(colorIndex)] || '#4a9ef7';
@@ -650,6 +719,7 @@ async function onCanvasClick(evt) {
   if (!rect || !rect.width) return;
   var xFrac = clampNum((evt.clientX - rect.left) / rect.width, 0, 1);
   var relSec = previewWindow.start + xFrac * previewWindow.len;
+  if (rangeArm)   { setRangeBoundary(rangeArm, relSec); return; }
   if (anchorArmed) { setAnchor(relSec); return; }
   await seekTo(relSec);
 }
@@ -765,6 +835,43 @@ async function runClearMarkers() {
     var left = await countMarkers(mc);
     log('Removed ' + removed + ' markers' + (left > 0 ? ' (' + left + ' left)' : '') + '.', 'success');
 
+    // Everything's gone now, so the tracked Place batch no longer exists to undo.
+    lastPlacement = null;
+    document.getElementById('undoBtn').disabled = true;
+
+  } catch (err) {
+    log('Error: ' + err.message, 'error');
+    console.error('[BM]', err);
+  }
+}
+
+// Removes only the markers created by the most recent Place Markers run, leaving
+// any markers that were already on the clip untouched — a targeted undo rather
+// than the blanket Clear Markers on Clip.
+async function runUndoPlaceMarkers() {
+  if (!lastPlacement || !lastPlacement.markers.length) { log('Nothing to undo.', 'info'); return; }
+  try {
+    var project = await ppro.Project.getActiveProject();
+    if (!project) throw new Error('No active project — open a project first');
+
+    var mc = lastPlacement.mc;
+    var batch = lastPlacement.markers;
+    var before = await countMarkers(mc);
+    log('Undoing ' + batch.length + ' placed markers…', 'info');
+
+    var removed = 0;
+    for (var i = 0; i < batch.length; i++) {
+      if (await removeClipMarker(project, mc, batch[i])) removed++;
+    }
+    if (removed === 0) throw new Error('Could not remove the placed markers — they may have already been deleted (see console)');
+
+    var after = await countMarkers(mc);
+    log('Undid ' + removed + ' of ' + batch.length + ' placed markers' +
+      (before >= 0 && after >= 0 ? ' (' + before + ' → ' + after + ')' : '') + '.', 'success');
+
+    lastPlacement = null;
+    document.getElementById('undoBtn').disabled = true;
+
   } catch (err) {
     log('Error: ' + err.message, 'error');
     console.error('[BM]', err);
@@ -804,6 +911,7 @@ function applyGrid() {
 function toggleAnchorArm() {
   if (!analysis) return;
   anchorArmed = !anchorArmed;
+  if (anchorArmed) { rangeArm = null; updateRangeUi(); }
   updateAnchorUi();
 }
 
@@ -840,6 +948,76 @@ function updateAnchorUi() {
   if (info) {
     if (analysis && analysis.anchor != null) info.textContent = 'Beat 1 @ ' + analysis.anchor.toFixed(2) + 's';
     else info.textContent = anchorArmed ? 'Click the downbeat in the waveform' : '';
+  }
+}
+
+// ── Placement range (mark only a section of the clip) ───────────────────────────
+//
+// analysis.rangeStart / rangeEnd bound where markers are placed, in clip-relative
+// seconds; either may be null to mean "clip start" / "clip end", so a one-sided
+// range still works. computeMarkerBeats filters to this range, so the preview and
+// Place Markers stay identical — the dimmed regions in the waveform are exactly
+// the beats that won't be committed.
+
+function toggleRangeArm(which) {
+  if (!analysis) return;
+  rangeArm = (rangeArm === which) ? null : which;
+  if (rangeArm) { anchorArmed = false; updateAnchorUi(); }
+  updateRangeUi();
+}
+
+function setRangeBoundary(which, relSec) {
+  if (!analysis) return;
+  var v = clampNum(relSec, 0, analysis.duration);
+  if (which === 'in') {
+    var hi = analysis.rangeEnd != null ? analysis.rangeEnd : analysis.duration;
+    analysis.rangeStart = Math.min(v, hi);
+  } else {
+    var lo = analysis.rangeStart != null ? analysis.rangeStart : 0;
+    analysis.rangeEnd = Math.max(v, lo);
+  }
+  rangeArm = null;
+  document.getElementById('placeBtn').disabled = false;
+  updateRangeUi();
+  redrawPreview();
+  log('Placement ' + (which === 'in' ? 'In' : 'Out') + ' set at ' +
+    (which === 'in' ? analysis.rangeStart : analysis.rangeEnd).toFixed(2) + 's.', 'success');
+}
+
+function clearRange() {
+  rangeArm = null;
+  if (!analysis || (analysis.rangeStart == null && analysis.rangeEnd == null)) { updateRangeUi(); return; }
+  analysis.rangeStart = null;
+  analysis.rangeEnd = null;
+  updateRangeUi();
+  redrawPreview();
+  log('Placement range cleared — markers span the whole clip.', 'info');
+}
+
+function updateRangeUi() {
+  var inBtn = document.getElementById('rangeInBtn');
+  var outBtn = document.getElementById('rangeOutBtn');
+  var clearBtn = document.getElementById('rangeClearBtn');
+  var info = document.getElementById('rangeInfo');
+  if (!inBtn || !outBtn || !clearBtn) return;
+  var hasRange = analysis && (analysis.rangeStart != null || analysis.rangeEnd != null);
+  inBtn.disabled = !analysis;
+  outBtn.disabled = !analysis;
+  clearBtn.disabled = !hasRange;
+  inBtn.textContent  = rangeArm === 'in'  ? '⟤ Click waveform…' : '⟤ Set In';
+  outBtn.textContent = rangeArm === 'out' ? 'Click waveform… ⟥' : 'Set Out ⟥';
+  if (rangeArm === 'in')  inBtn.classList.add('armed-range');  else inBtn.classList.remove('armed-range');
+  if (rangeArm === 'out') outBtn.classList.add('armed-range'); else outBtn.classList.remove('armed-range');
+  if (info) {
+    if (rangeArm) {
+      info.textContent = 'Click where placement should ' + (rangeArm === 'in' ? 'start' : 'end');
+    } else if (hasRange) {
+      var lo = analysis.rangeStart != null ? analysis.rangeStart.toFixed(2) + 's' : 'start';
+      var hi = analysis.rangeEnd   != null ? analysis.rangeEnd.toFixed(2) + 's'   : 'end';
+      info.textContent = 'Marking ' + lo + ' → ' + hi;
+    } else {
+      info.textContent = '';
+    }
   }
 }
 

@@ -129,6 +129,8 @@
     .mini-btn:disabled { background: #383838; color: #666; cursor: not-allowed; }
     .mini-btn.armed { background: #4a9ef7; border-color: #4a9ef7; color: #fff; }
     .mini-btn.armed:hover { background: #6abaff; }
+    .mini-btn.armed-range { background: #3fae6b; border-color: #3fae6b; color: #fff; }
+    .mini-btn.armed-range:hover { background: #55c583; }
 
     /* Compact icon buttons for zoom in/out — smaller than the text mini-buttons. */
     .zoom-step {
@@ -302,10 +304,17 @@
         <button type="button" id="anchorClearBtn" class="mini-btn" disabled title="Remove the anchor and revert to the detected phase">Clear anchor</button>
         <span id="anchorInfo" class="preview-info"></span>
       </div>
+      <div class="preview-toolbar">
+        <button type="button" id="rangeInBtn" class="mini-btn" disabled title="Then click the waveform to set where marker placement starts">⟤ Set In</button>
+        <button type="button" id="rangeOutBtn" class="mini-btn" disabled title="Then click the waveform to set where marker placement ends">Set Out ⟥</button>
+        <button type="button" id="rangeClearBtn" class="mini-btn" disabled title="Place markers across the whole clip again">Clear range</button>
+        <span id="rangeInfo" class="preview-info"></span>
+      </div>
       <div id="previewInfo" class="preview-info">No analysis yet — click Analyze.</div>
     </div>
 
     <button id="placeBtn" class="detect-btn" disabled>Place Markers</button>
+    <button id="undoBtn" class="secondary-btn" disabled title="Remove only the markers placed by the last Place Markers run">Undo Placed Markers</button>
     <button id="clearMarkersBtn" class="secondary-btn">Clear Markers on Clip</button>
 
     <div>
