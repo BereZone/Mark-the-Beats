@@ -69,6 +69,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change (it was being reallocated — and cleared — on every redraw)
 - `manifest.json` now reports version 0.2.0, matching `package.json`. The 0.2.0 release
   bumped only `package.json`, so Premiere kept showing the plugin as 0.1.0
+- **Premiere no longer stutters while the panel is open.** The playhead-follow loop
+  polled Premiere for its playhead position ~11×/second during playback. Every poll is
+  a round trip across the UXP↔Premiere scripting bridge onto Premiere's own thread, so
+  the panel was competing with the playback it was trying to track. It now polls twice
+  a second and derives the playhead in between from the rate measured across the last
+  two polls, on a rAF ticker that never touches the bridge — about 6× less traffic
+  during playback, and a *smoother* playhead than before (it used to advance in visible
+  90 ms steps). The idle heartbeat also backs off toward one poll every 2 s, so a panel
+  left open on a still timeline costs almost nothing. The trade-off is that playback
+  started in Premiere takes up to ~1 s to pick up, and stopping playback can overshoot
+  by ~0.3 s before the next poll corrects it
+- **The panel no longer polls Premiere at all while in-panel audio is playing.** The
+  follow loop ran at full speed during in-panel playback and discarded every result,
+  since that path drives the playhead from the audio clock — ~11 wasted round trips per
+  second at the most latency-sensitive moment
+- **The panel no longer holds the audio output device open for the whole session.** The
+  `AudioContext` was created on the first waveform click and left running forever after,
+  contending with Premiere's own audio output even when the panel was silent. It's now
+  suspended whenever nothing is playing and resumed on play
+- **Playback stopped from Premiere is now noticed.** If the panel started playback and
+  the user stopped it in Premiere directly (space bar, program monitor), the panel never
+  found out: its button stayed on "⏸ Pause" and it kept polling at the fast cadence for
+  the rest of the session. A motionless playhead across several polls now ends it
+- Following no longer dies permanently on a single failed position read — it retries on
+  the slow heartbeat and stands down only after repeated failures
+- A forward scrub while paused no longer makes the preview playhead creep past where it
+  was dropped before snapping back
 
 ## [0.2.0] - 2026-07-22
 
