@@ -67,6 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without touching the canvas, and the waveform is repainted only when the window
   actually scrolls. The canvas backing store is also resized only when its dimensions
   change (it was being reallocated — and cleared — on every redraw)
+- `manifest.json` now reports version 0.2.0, matching `package.json`. The 0.2.0 release
+  bumped only `package.json`, so Premiere kept showing the plugin as 0.1.0
 
 ## [0.2.0] - 2026-07-22
 

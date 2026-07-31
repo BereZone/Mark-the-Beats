@@ -11,12 +11,12 @@ jobs:
     name: Validate plugin
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Check manifest is valid JSON
         run: node -e "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8')); console.log('manifest.json OK')"
@@ -26,23 +26,10 @@ jobs:
 
       - name: Validate JS modules parse without errors
         run: |
-          node --input-type=module <<'EOF'
-          // Strip UXP-specific require() calls so Node can parse the module graph
-          import { readFileSync } from 'fs';
-
-          const files = ['src/wavParser.js', 'src/beatDetector.js'];
-          for (const f of files) {
-            try {
-              const src = readFileSync(f, 'utf8');
-              // Quick syntax check via dynamic Function (not full eval)
-              new Function(src.replace(/^export /gm, ''));
-              console.log(`${f} — syntax OK`);
-            } catch (e) {
-              console.error(`${f} — FAILED: ${e.message}`);
-              process.exit(1);
-            }
-          }
-          EOF
+          for f in wavParser.js mp3Parser.js beatDetector.js main.js; do
+            node --check "$f" || exit 1
+            echo "$f — syntax OK"
+          done
 
       - name: Check version consistency
         run: |
