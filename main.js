@@ -185,10 +185,7 @@ async function runAnalyze() {
     rangeArm = null;
     applyGrid();
 
-    stopPlayheadPoll();
-    stopInPanelSource();
-    stopPremiereFollow();
-    panelStartedPlayback = false;
+    stopPlayback();
     previewWindow = { start: 0, len: Math.min(DEFAULT_ZOOM_SEC, duration) };
     previewPlayheadRel = null;
 
@@ -202,7 +199,6 @@ async function runAnalyze() {
     document.getElementById('playBtn').textContent = '▶ Play';
     updateZoomBar();
     redrawPreview();
-    startPremiereFollow();
     log('Analysis ready — adjust settings or click Place Markers.', 'success');
 
   } catch (err) {
@@ -220,10 +216,7 @@ function resetPreviewControls() {
   document.getElementById('zoomBar').classList.add('disabled');
   document.getElementById('zoomInBtn').disabled = true;
   document.getElementById('zoomOutBtn').disabled = true;
-  stopPlayheadPoll();
-  stopInPanelSource();
-  stopPremiereFollow();
-  panelStartedPlayback = false;
+  stopPlayback();
   previewPlayheadRel = null;
   var playBtn = document.getElementById('playBtn');
   playBtn.disabled = true;
@@ -638,63 +631,55 @@ function zoomBy(factor) {
   redrawPreview();
 }
 
-// ── Playback (Premiere's own transport, not an in-panel <audio> element) ───────
+// ── Playback (entirely in-panel — Premiere is never involved) ─────────────────
 //
-// UXP's webview has no functional <audio> element here — confirmed live:
-// document.createElement('audio') returns a node without even play()/pause().
-// Real audio has to come from Premiere itself, so this drives the sequence's
-// own playhead/transport via the premierepro scripting API instead. Nothing in
-// this codebase has touched playback before, and Adobe's docs for this API
-// surface are thin on transport control specifically, so — same as marker
-// creation/color/removal elsewhere in this file — candidate method names are
-// probed and verified rather than assumed. Position-set is verified by reading
-// the position back; the play-trigger is verified by checking whether the
-// playhead actually advances afterward, since "no exception thrown" proved to
-// be a false signal of success with the <audio> element too.
-
-var previewPlayheadRel = null; // clip-relative seconds of our last-known Premiere playhead position
-var playheadPollHandle = null; // rAF (or setTimeout fallback) handle while following continuous playback
-
-// True while the panel's Play button started Premiere's transport, so pause routes
-// back to it. (Playback the user starts directly in Premiere is followed but not
-// "owned" by the panel, so the panel won't pause it.)
-var panelStartedPlayback = false;
-
-// Generation token for the Premiere-playhead follow loop: bumping it retires any
-// running loop (used on stop and on re-analyze) without leaving a second loop alive.
-var _followGen = 0;
-var _lastFollowTicks = null;
-
-// Dead-reckoning state for the follow loop. Between the sparse bridge polls the
-// playhead is derived locally from the wall clock at the rate measured across the
-// last two polls, so the overlay stays smooth without asking Premiere every frame.
-var _followRate       = 0;    // sequence-seconds per wall-clock second; 0 = not advancing
-var _followAnchorRel  = 0;    // clip-relative position reported by the last poll
-var _followAnchorWall = 0;    // Date.now() at that poll
-var _followWasMoving  = false;
-var _followRafHandle  = null;
-var _followFailures   = 0;
-
-// ── In-panel audio (Web Audio) ──────────────────────────────────────────────
+// Playback used to drive Premiere's own transport and then poll getPlayerPosition
+// to mirror the sequence playhead back onto the preview. Every one of those polls
+// was a round trip across the UXP↔Premiere scripting bridge landing on Premiere's
+// own thread, so auditioning a clip made the panel compete with the application it
+// was asking to play — which is what made both Premiere's transport and this
+// playhead stutter. All of it is gone. Nothing in this section calls into
+// Premiere, on any cadence, ever.
 //
-// Why CEP-based tools ("Beat Marker Pro" and the like) can play sound in the
-// panel and older UXP notes here said this one can't: CEP extensions run in a
-// full embedded Chromium, so <audio> and Web Audio just work. UXP runs a
-// stripped engine — its <audio> element is inert (createElement('audio') returns
-// a node without play()/pause()), which is why playback fell back to driving
-// Premiere's own transport. But we already hold the decoded PCM (analysis.waveform)
-// whenever a clip was read/transcoded, so if this UXP build exposes AudioContext
-// at all we can feed those samples straight to the speakers from the panel. It's
-// probed and cached like every other host API here; if AudioContext is absent we
-// silently keep the Premiere-transport path, so nothing regresses.
+// Instead the panel plays the PCM it already decoded during analysis. That buffer
+// (analysis.waveform) is a mono float mixdown already sliced to the clip's in/out,
+// so buffer time == clip-relative time == the preview's own time base, and the
+// playhead comes from a local clock rather than from asking anyone where it is.
+//
+// CEP extensions get in-panel audio for free — they run a full embedded Chromium.
+// UXP runs a stripped engine whose <audio> element is inert (createElement('audio')
+// returns a node without play()/pause()), so Web Audio is probed and cached like
+// every other host API in this file. Where even AudioContext is missing, playback
+// degrades to a silent visual preview — the playhead still sweeps the waveform in
+// real time against the beat grid — rather than reaching back into Premiere.
+
+var previewPlayheadRel = null; // clip-relative seconds of the preview playhead
+var playheadPollHandle = null; // rAF (or setTimeout fallback) handle while the transport runs
 
 var _audioCtx = null;
 var _audioCtxProbed = false;
 
-// Live in-panel playback: the running BufferSource plus the anchor used to derive
-// the current position from the context clock (start(0, offset) gives no
-// position readout of its own).
-var webAudio = { source: null, buffer: null, bufferFor: null, startCtxTime: 0, startOffset: 0, playing: false };
+// The panel's transport. `silent` marks a run with no audio behind it, where the
+// position comes from the wall clock instead of the audio clock — the only thing
+// that differs between the two, so nothing downstream has to branch on it.
+var transport = { playing: false, silent: false, startOffset: 0, startClock: 0 };
+
+// Live Web Audio playback: the running BufferSource, plus the AudioBuffer built
+// once per analysis from the decoded PCM.
+var webAudio = { source: null, buffer: null, bufferFor: null };
+
+// Seconds, from whichever clock is driving the current run. The audio clock is
+// preferred when there is real audio: it is the one the speakers actually follow,
+// so the playhead can't drift from what's being heard.
+function transportClockSec() {
+  if (!transport.silent && _audioCtx) return _audioCtx.currentTime;
+  return Date.now() / 1000;
+}
+
+function playbackPositionSec() {
+  if (!transport.playing) return previewPlayheadRel != null ? previewPlayheadRel : 0;
+  return transport.startOffset + (transportClockSec() - transport.startClock);
+}
 
 function getAudioContext() {
   if (_audioCtxProbed) return _audioCtx;
@@ -702,7 +687,7 @@ function getAudioContext() {
   var Ctor = (typeof AudioContext !== 'undefined' && AudioContext) ||
              (typeof webkitAudioContext !== 'undefined' && webkitAudioContext) ||
              (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) || null;
-  if (!Ctor) { console.log('[BM] no AudioContext in this UXP host — using Premiere transport for playback'); return null; }
+  if (!Ctor) { console.log('[BM] no AudioContext in this UXP host — playback will be a silent preview'); return null; }
   try { _audioCtx = new Ctor(); console.log('[BM] AudioContext available — in-panel audio enabled'); }
   catch (e) { console.log('[BM] AudioContext ctor threw:', e && e.message); _audioCtx = null; }
   // A fresh context starts running and claims the output device. Nothing is
@@ -731,76 +716,94 @@ function getPlaybackBuffer(ctx) {
   return buf;
 }
 
-// Stops the source AND parks the context. A running AudioContext holds the audio
-// output device open even with nothing connected to it, and this one otherwise
-// stayed running for the rest of the session after the first in-panel play —
-// contending with Premiere's own audio output for the whole edit. Suspending
-// hands the device back; startInPanelPlayback resumes it on the next play.
-// Callers that need the playback position must read it before calling this,
-// since ctx.currentTime stops advancing once suspended.
-function stopInPanelSource() {
-  stopSourceOnly();
-  suspendAudioContext();
-}
-
-// Tears down the source without parking the context — used when another source is
-// about to take its place (a seek mid-playback), where suspending and immediately
-// resuming would be a pointless device round trip on every scrub.
+// Tears down the BufferSource only. Used when another source is about to take its
+// place (a seek mid-playback), where parking the device and immediately reclaiming
+// it would be a pointless round trip on every scrub.
 function stopSourceOnly() {
   if (webAudio.source) {
     try { webAudio.source.onended = null; webAudio.source.stop(); } catch (_) {}
     try { webAudio.source.disconnect(); } catch (_) {}
     webAudio.source = null;
   }
-  webAudio.playing = false;
 }
 
+// A running AudioContext holds the audio output device open even with nothing
+// connected to it, so it is parked whenever the panel isn't actually playing —
+// otherwise it would sit on the device alongside Premiere's own audio for the
+// whole session. Callers that need the playback position must read it before
+// parking, since ctx.currentTime stops advancing once suspended.
 function suspendAudioContext() {
   if (_audioCtx && _audioCtx.state === 'running' && typeof _audioCtx.suspend === 'function') {
     try { _audioCtx.suspend(); } catch (_) {}
   }
 }
 
-// (Re)starts in-panel playback from offsetSec (clip-relative). Returns false if
-// the buffer or the source couldn't be built, so the caller can fall back to the
-// Premiere transport within the same click.
-async function startInPanelPlayback(ctx, offsetSec) {
-  var buffer = getPlaybackBuffer(ctx);
-  if (!buffer) return false;
+// The single way playback stops. Leaves previewPlayheadRel wherever it was, so
+// pausing and playing again resumes from the same spot.
+function stopPlayback() {
+  stopPlayheadPoll();
   stopSourceOnly();
-  try { if (ctx.state === 'suspended' && typeof ctx.resume === 'function') await ctx.resume(); } catch (_) {}
+  suspendAudioContext();
+  transport.playing = false;
+  var btn = document.getElementById('playBtn');
+  if (btn) btn.textContent = '▶ Play';
+}
+
+// Starts (or restarts) playback at offsetSec, clip-relative. Returns 'audio' when
+// real sound is coming out, 'silent' when the host gave us no way to make any and
+// this is a visual-only run. Never returns a failure the caller has to route
+// around — a silent preview is always available.
+async function startPlayback(offsetSec) {
   var off = clampNum(offsetSec, 0, analysis.duration);
-  var src;
-  try {
-    src = ctx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(ctx.destination);
-    src.start(0, off);
-  } catch (e) {
-    console.log('[BM] in-panel start failed:', e && e.message);
-    suspendAudioContext();
-    return false;
+  var ctx = (analysis.waveform && analysis.waveform.samples) ? getAudioContext() : null;
+  var buffer = ctx ? getPlaybackBuffer(ctx) : null;
+
+  if (ctx && buffer) {
+    stopSourceOnly();
+    try { if (ctx.state === 'suspended' && typeof ctx.resume === 'function') await ctx.resume(); } catch (_) {}
+    var src;
+    try {
+      src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+      src.start(0, off);
+    } catch (e) {
+      console.log('[BM] in-panel start failed — falling back to a silent preview:', e && e.message);
+      suspendAudioContext();
+      src = null;
+    }
+    if (src) {
+      webAudio.source = src;
+      transport.silent = false;
+      transport.startClock = ctx.currentTime;
+      transport.startOffset = off;
+      transport.playing = true;
+      startTransportPoll();
+      return 'audio';
+    }
   }
-  webAudio.source = src;
-  webAudio.startCtxTime = ctx.currentTime;
-  webAudio.startOffset = off;
-  webAudio.playing = true;
-  return true;
+
+  stopSourceOnly();
+  suspendAudioContext();
+  transport.silent = true;
+  transport.startClock = Date.now() / 1000;
+  transport.startOffset = off;
+  transport.playing = true;
+  startTransportPoll();
+  return 'silent';
 }
 
-function inPanelPositionSec(ctx) {
-  return webAudio.startOffset + (ctx.currentTime - webAudio.startCtxTime);
-}
-
-function startInPanelPoll(ctx) {
+// Drives the playhead off the transport clock. Pure panel work — a rAF tick, a
+// CSS transform on the overlay, and a canvas repaint only when the zoom window
+// actually scrolls. Nothing here touches the scripting bridge.
+function startTransportPoll() {
   stopPlayheadPoll();
   function tick() {
-    var rel = inPanelPositionSec(ctx);
+    if (!transport.playing || !analysis) { playheadPollHandle = null; return; }
+    var rel = playbackPositionSec();
     if (rel >= analysis.duration) {
       previewPlayheadRel = analysis.duration;
-      stopInPanelSource();
-      stopPlayheadPoll();
-      document.getElementById('playBtn').textContent = '▶ Play';
+      stopPlayback();
       redrawPreview();
       return;
     }
@@ -809,101 +812,6 @@ function startInPanelPoll(ctx) {
     playheadPollHandle = rafFn(tick);
   }
   playheadPollHandle = rafFn(tick);
-}
-
-var _setPositionSig = null;
-
-async function setSequencePosition(sequence, sequenceTimeSec) {
-  if (!sequence) return false;
-  await ensureTTCtor(sequence);
-  var tt;
-  try { tt = makeTickTime(Math.max(0, sequenceTimeSec)); }
-  catch (e) { console.log('[BM] setSequencePosition: makeTickTime failed:', e && e.message); return false; }
-
-  var candidates = _setPositionSig !== null ? [_setPositionSig] : [0, 1];
-  for (var s = 0; s < candidates.length; s++) {
-    var idx = candidates[s];
-    try {
-      if (idx === 0 && typeof sequence.setPlayerPosition === 'function') await sequence.setPlayerPosition(tt);
-      else if (idx === 1 && typeof sequence.setPosition === 'function') await sequence.setPosition(tt);
-      else continue;
-    } catch (e) {
-      console.log('[BM] setSequencePosition sig#' + idx + ' failed:', e && e.message);
-      continue;
-    }
-    if (_setPositionSig === null) {
-      _setPositionSig = idx;
-      console.log('[BM] sequence position-set signature #' + idx + ' confirmed');
-    }
-    return true;
-  }
-  return false;
-}
-
-var PLAY_CANDIDATES = [
-  function (seq) { return seq.play(); },
-  function (seq) { return seq.setPlaying(true); },
-  function (seq) { return seq.startPlaying(); }
-];
-var _playSig = null;
-var _playProbed = false;
-
-// Tries each candidate in turn and waits 500ms to see whether the playhead
-// actually moved — a promise resolving (or no exception) isn't proof anything
-// really started, exactly as the <audio>.play() case showed. Result (including
-// "none of them work") is cached so repeat Play clicks don't re-probe.
-async function tryStartSequencePlayback(sequence) {
-  if (_playProbed) {
-    if (_playSig == null) return false;
-    try { await PLAY_CANDIDATES[_playSig](sequence); return true; }
-    catch (e) { console.log('[BM] cached play signature failed on reuse:', e && e.message); return false; }
-  }
-
-  var before = null;
-  try { before = String((await sequence.getPlayerPosition()).ticks); } catch (_) {}
-
-  for (var i = 0; i < PLAY_CANDIDATES.length; i++) {
-    try { await PLAY_CANDIDATES[i](sequence); }
-    catch (e) { console.log('[BM] play candidate #' + i + ' threw:', e && e.message); continue; }
-
-    await sleep(500);
-    var advanced = false;
-    try { advanced = before != null && String((await sequence.getPlayerPosition()).ticks) !== before; }
-    catch (_) {}
-    console.log('[BM] play candidate #' + i + ' ran; playhead advanced=' + advanced);
-
-    if (advanced) {
-      _playSig = i;
-      _playProbed = true;
-      console.log('[BM] sequence play signature #' + i + ' confirmed (playhead advances)');
-      return true;
-    }
-    try { if (typeof sequence.pause === 'function') await sequence.pause(); } catch (_) {}
-  }
-  _playProbed = true;
-  _playSig = null;
-  console.log('[BM] no play-trigger candidate advanced the playhead — continuous playback not scriptable here');
-  return false;
-}
-
-var PAUSE_CANDIDATES = [
-  function (seq) { return seq.pause(); },
-  function (seq) { return seq.setPlaying(false); },
-  function (seq) { return seq.stopPlaying(); }
-];
-var _pauseSig = null;
-
-async function tryPauseSequencePlayback(sequence) {
-  var candidates = _pauseSig !== null ? [_pauseSig] : [0, 1, 2];
-  for (var s = 0; s < candidates.length; s++) {
-    var idx = candidates[s];
-    try {
-      await PAUSE_CANDIDATES[idx](sequence);
-      if (_pauseSig === null) { _pauseSig = idx; console.log('[BM] sequence pause signature #' + idx + ' confirmed'); }
-      return true;
-    } catch (e) { console.log('[BM] pause candidate #' + idx + ' failed:', e && e.message); }
-  }
-  return false;
 }
 
 // Set true when a canvas mousedown turns into a pan drag, so the trailing click
@@ -961,277 +869,55 @@ async function onCanvasClick(evt) {
   await seekTo(relSec);
 }
 
+// Moves the preview playhead. Mid-playback this restarts the source at the new
+// offset so the audio jumps with it; stopped, it just parks the playhead there for
+// the next Play. Premiere's own playhead is deliberately left alone.
 async function seekTo(relSec) {
   if (!analysis) return;
   var clamped = clampNum(relSec, 0, analysis.duration);
-
-  // In-panel audio path: reposition the panel's own playback and keep Premiere's
-  // playhead loosely in sync too (a move, not a play, so no double audio).
-  var ctx = (analysis.waveform && analysis.waveform.samples) ? getAudioContext() : null;
-  if (ctx) {
-    previewPlayheadRel = clamped;
-    if (webAudio.playing) await startInPanelPlayback(ctx, clamped);
-    updatePlayheadOverlay();
-    if (analysis.sequence) {
-      try { await setSequencePosition(analysis.sequence, analysis.clipInfo.start + clamped); } catch (_) {}
-    }
-    return;
-  }
-
-  if (!analysis.sequence) return;
-  var moved = await setSequencePosition(analysis.sequence, analysis.clipInfo.start + clamped);
-  if (moved) {
-    previewPlayheadRel = clamped;
-    updatePlayheadOverlay();
-  } else {
-    log('Could not move Premiere\'s playhead — no working position-set API found.', 'error');
-  }
+  previewPlayheadRel = clamped;
+  if (transport.playing) await startPlayback(clamped);
+  else updatePlayheadOverlay();
 }
 
 async function togglePlayback() {
   if (!analysis) return;
   var playBtn = document.getElementById('playBtn');
 
-  // Pause whichever path we started.
-  if (webAudio.playing) {
-    var ctx2 = getAudioContext();
-    var elapsed = ctx2 ? inPanelPositionSec(ctx2) : (previewPlayheadRel || 0);
-    stopInPanelSource();
-    stopPlayheadPoll();
+  if (transport.playing) {
+    // Read the position before stopping — the clock behind it stops with it.
+    var elapsed = playbackPositionSec();
+    stopPlayback();
     previewPlayheadRel = clampNum(elapsed, 0, analysis.duration);
-    playBtn.textContent = '▶ Play';
     updatePlayheadOverlay();
     return;
   }
-  if (panelStartedPlayback) {
-    if (analysis.sequence) await tryPauseSequencePlayback(analysis.sequence);
-    panelStartedPlayback = false;
-    playBtn.textContent = '▶ Play';
-    return;
-  }
 
+  // Restart from the top once the playhead has run to the end, so Play after the
+  // clip finishes replays it instead of doing nothing.
   var jumpRel = previewPlayheadRel != null ? previewPlayheadRel : previewWindow.start;
+  if (jumpRel >= analysis.duration - 1e-3) jumpRel = 0;
 
-  // Preferred: real sound from the panel via Web Audio, when we have decoded
-  // samples and this UXP host exposes AudioContext. Falls through to the Premiere
-  // transport if either is missing or the source won't start.
-  var ctx = (analysis.waveform && analysis.waveform.samples) ? getAudioContext() : null;
-  if (ctx) {
-    playBtn.disabled = true;
-    var ok = await startInPanelPlayback(ctx, jumpRel);
-    playBtn.disabled = false;
-    if (ok) {
-      previewPlayheadRel = jumpRel;
-      playBtn.textContent = '⏸ Pause';
-      startInPanelPoll(ctx);
-      log('Playing audio in the panel from ' + jumpRel.toFixed(1) + 's.', 'info');
-      return;
-    }
-  }
-
-  if (!analysis.sequence) { log('Nothing to play — no audio decoded and no sequence.', 'error'); return; }
-  var sequence = analysis.sequence;
   playBtn.disabled = true;
-  var moved = await setSequencePosition(sequence, analysis.clipInfo.start + jumpRel);
-  if (!moved) {
-    log('Could not move Premiere\'s playhead — no working position-set API found.', 'error');
-    playBtn.disabled = false;
-    return;
-  }
-  previewPlayheadRel = jumpRel;
-  updatePlayheadOverlay();
-
-  // The follow loop (always running) mirrors the moving playhead onto the preview
-  // whether or not we could script the transport start.
-  var started = await tryStartSequencePlayback(sequence);
+  var mode = await startPlayback(jumpRel);
   playBtn.disabled = false;
-  if (started) {
-    panelStartedPlayback = true;
-    playBtn.textContent = '⏸ Pause';
-    log('Playing in Premiere from ' + jumpRel.toFixed(1) + 's — preview playhead will follow.', 'info');
+
+  previewPlayheadRel = jumpRel;
+  playBtn.textContent = '⏸ Pause';
+  if (mode === 'audio') {
+    log('Playing in the panel from ' + jumpRel.toFixed(1) + 's.', 'info');
+  } else if (!analysis.waveform || !analysis.waveform.samples) {
+    // The two silent cases have different fixes, so they get different messages.
+    log('Playing a silent preview from ' + jumpRel.toFixed(1) + 's — this analysis used a manual BPM, ' +
+        'so no audio was decoded to play. Clear the BPM field and re-analyze to get sound.', 'info');
   } else {
-    log('Continuous playback isn\'t scriptable in this Premiere version — moved the playhead to ' +
-      jumpRel.toFixed(1) + 's. Press play in Premiere and the preview playhead will follow along.', 'info');
+    log('Playing a silent preview from ' + jumpRel.toFixed(1) + 's — this host exposes no audio API ' +
+        'to the panel, so the playhead sweeps the beat grid without sound.', 'info');
   }
 }
 
 function stopPlayheadPoll() {
   if (playheadPollHandle != null) { cafFn(playheadPollHandle); playheadPollHandle = null; }
-}
-
-// Mirrors Premiere's sequence playhead onto the preview so the playhead tracks
-// playback however it started — the panel's Play button OR play/scrub in Premiere
-// directly (which the panel gets no event for, hence polling).
-//
-// Every poll is a round trip across the UXP↔Premiere scripting bridge that lands
-// on Premiere's own thread, so polling fast during playback competes with the
-// very playback it's trying to track — which is what made both Premiere's
-// transport and this playhead stutter. The loop therefore asks as rarely as it
-// can and fills the gaps locally: each poll measures how fast sequence time is
-// advancing per wall-clock second, and between polls the playhead is dead-reckoned
-// from that rate on a rAF ticker that never touches the bridge. The result is a
-// smoother playhead than the old fast poll produced, at a fraction of the traffic.
-//
-// It also stays quiet when it has nothing to learn: the bridge is skipped entirely
-// while in-panel Web Audio owns the playhead (that path drives itself from the
-// audio clock) and while the panel is hidden, and the idle heartbeat backs off
-// toward FOLLOW_MAX_MS so a panel left open on a still timeline costs almost
-// nothing. Any movement snaps it back to the responsive cadence.
-var FOLLOW_PLAYING_MS = 500;  // resync while sequence time is advancing
-var FOLLOW_IDLE_MS    = 750;  // first heartbeat once movement stops
-var FOLLOW_MAX_MS     = 2000; // heartbeat floor after a long idle stretch
-var FOLLOW_HIDDEN_MS  = 2000; // barely ticking while the panel isn't visible
-var FOLLOW_QUIET_MS   = 2000; // in-panel audio owns the playhead; just watch for it ending
-var FOLLOW_MAX_ERRORS = 5;    // give up after this many consecutive bridge failures
-var FOLLOW_STALL_POLLS = 4;   // motionless polls before assuming Premiere stopped on its own
-
-// Hard cap on how far ahead of the last poll dead reckoning will predict, so a
-// playback stop that lands between polls can only ever overshoot by this much
-// before the next poll corrects it.
-var FOLLOW_PREDICT_CAP_SEC = 1.0;
-
-function stopFollowRaf() {
-  if (_followRafHandle != null) { cafFn(_followRafHandle); _followRafHandle = null; }
-}
-
-function startPremiereFollow() {
-  var gen = ++_followGen;
-  if (!analysis || !analysis.sequence) return;
-  _lastFollowTicks = null;
-  _followRate = 0;
-  _followWasMoving = false;
-  _followAnchorWall = 0;
-  _followFailures = 0;
-  var seq = analysis.sequence;
-  var idleMs = FOLLOW_IDLE_MS;
-  var stalls = 0;
-
-  // Paints the dead-reckoned playhead between polls. Runs only while the playhead
-  // is actually advancing — at rate 0 it retires itself rather than spinning.
-  function predictTick() {
-    if (gen !== _followGen) { _followRafHandle = null; return; }
-    if (_followRate <= 0 || !analysis || !previewWindow) { _followRafHandle = null; return; }
-    var ahead = Math.min((Date.now() - _followAnchorWall) / 1000, FOLLOW_PREDICT_CAP_SEC);
-    var rel = clampNum(_followAnchorRel + ahead * _followRate, 0, analysis.duration);
-    showFollowPosition(rel);
-    _followRafHandle = rafFn(predictTick);
-  }
-
-  function startPredicting() {
-    if (_followRafHandle == null && _followRate > 0) _followRafHandle = rafFn(predictTick);
-  }
-
-  function showFollowPosition(relSec) {
-    if (relSec >= 0 && relSec <= analysis.duration) {
-      previewPlayheadRel = relSec;
-      if (followPlayheadIntoView(relSec)) redrawPreview(); else updatePlayheadOverlay();
-    } else {
-      previewPlayheadRel = null;
-      updatePlayheadOverlay();
-    }
-  }
-
-  (function loop() {
-    if (gen !== _followGen) return;
-
-    // Nothing to learn from the bridge in these two states, so don't pay for it.
-    // Clearing the anchor makes the first poll after either gap a fresh baseline,
-    // so a long dormant stretch can't be read as a burst of playback.
-    if (typeof document !== 'undefined' && document.hidden) {
-      stopFollowRaf(); _followRate = 0; _followWasMoving = false; _followAnchorWall = 0;
-      setTimeout(loop, FOLLOW_HIDDEN_MS); return;
-    }
-    if (webAudio.playing) {
-      stopFollowRaf(); _followRate = 0; _followWasMoving = false; _followAnchorWall = 0;
-      setTimeout(loop, FOLLOW_QUIET_MS); return;
-    }
-
-    seq.getPlayerPosition().then(function (pos) {
-      if (gen !== _followGen) return;
-      _followFailures = 0;
-
-      var ticks = pos ? String(pos.ticks) : null;
-      var moved = ticks !== _lastFollowTicks;
-      _lastFollowTicks = ticks;
-
-      var nowWall = Date.now();
-      var relSec = pos ? ticksToSeconds(pos.ticks) - analysis.clipInfo.start : null;
-
-      if (relSec == null) {
-        _followRate = 0; _followWasMoving = false; stopFollowRaf();
-        setTimeout(loop, idleMs); return;
-      }
-
-      // Derive the playback rate for the next stretch of dead reckoning. A rate is
-      // only trusted when the previous interval was also moving — the first interval
-      // after a start includes however long the playhead sat still before it began,
-      // which would read as a fraction of real speed. Backwards or absent movement
-      // (a scrub, a stop) predicts nothing and just snaps to the reported position.
-      var dtWall = _followAnchorWall ? (nowWall - _followAnchorWall) / 1000 : 0;
-      var dtSeq  = relSec - _followAnchorRel;
-      var rate = dtWall > 0.05 ? dtSeq / dtWall : 0;
-      if (!moved || dtSeq < 0 || dtWall <= 0.05) _followRate = 0;
-      else if (rate > 4)                         _followRate = 0; // faster than any playback — a scrub or a seek
-      else if (!_followWasMoving)                _followRate = 1;
-      else                                       _followRate = rate;
-
-      _followWasMoving  = moved;
-      _followAnchorRel  = relSec;
-      _followAnchorWall = nowWall;
-
-      if (moved) showFollowPosition(relSec);
-
-      if (panelStartedPlayback && relSec > analysis.duration) {
-        tryPauseSequencePlayback(seq);
-        panelStartedPlayback = false;
-        document.getElementById('playBtn').textContent = '▶ Play';
-        _followRate = 0;
-      }
-
-      if (_followRate > 0) startPredicting(); else stopFollowRaf();
-
-      // Premiere's transport can also be stopped outside the panel (space bar, the
-      // program monitor), and nothing tells us — so a playhead that sits still
-      // across several polls is the signal. Without this the panel keeps claiming
-      // it's playing, its button keeps saying Pause, and the fast cadence never
-      // lets up for the rest of the session.
-      if (panelStartedPlayback && !moved) {
-        if (++stalls >= FOLLOW_STALL_POLLS) {
-          panelStartedPlayback = false;
-          document.getElementById('playBtn').textContent = '▶ Play';
-          stalls = 0;
-        }
-      } else if (moved) stalls = 0;
-
-      // Watch closely whenever the playhead moved at all — not just when a usable
-      // rate came out of it. A backwards seek (scrub back, then play) yields no
-      // rate, and treating that as idle used to drop it onto the backed-off
-      // heartbeat, so following didn't resume for seconds after playback started.
-      var active = moved || _followRate > 0 || panelStartedPlayback;
-      if (active) idleMs = FOLLOW_IDLE_MS;
-      else        idleMs = Math.min(FOLLOW_MAX_MS, Math.round(idleMs * 1.5));
-      setTimeout(loop, active ? FOLLOW_PLAYING_MS : idleMs);
-    }).catch(function (e) {
-      if (gen !== _followGen) return;
-      // A single rejection used to kill following for good. Retry on the slow
-      // heartbeat instead, and stand down only if the API is consistently absent.
-      stopFollowRaf();
-      _followRate = 0; _followWasMoving = false;
-      if (++_followFailures >= FOLLOW_MAX_ERRORS) {
-        console.log('[BM] playhead follow unavailable — not tracking Premiere:', e && e.message);
-        return;
-      }
-      setTimeout(loop, FOLLOW_MAX_MS);
-    });
-  })();
-}
-
-function stopPremiereFollow() {
-  _followGen++;
-  stopFollowRaf();
-  _followRate = 0;
-  _followWasMoving = false;
-  _followAnchorWall = 0;
 }
 
 // Scrolls the zoom window to follow playback, and returns true only when it

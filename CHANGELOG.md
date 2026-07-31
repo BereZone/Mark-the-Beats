@@ -60,7 +60,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the thumb's drawn width is floored, and its position is clamped so it never overflows
   the bar), and the resize end-caps are restyled as Premiere-like rounded grip handles
 
+### Changed
+- **Playback is now entirely in-panel and never touches Premiere.** Play used to drive
+  Premiere's sequence transport and then poll `getPlayerPosition` to mirror the sequence
+  playhead back onto the preview; every poll was a round trip across the UXP↔Premiere
+  scripting bridge onto Premiere's own thread, so auditioning a clip made the panel
+  compete with the application it was asking to play. The panel now plays the PCM it
+  already decoded during analysis through Web Audio and drives the playhead from a local
+  clock. Nothing in the playback path calls into Premiere on any cadence, so an open
+  panel costs Premiere nothing whether it's idle, playing, or paused
+- **Play and the preview playhead no longer move Premiere's playhead**, and the preview
+  no longer follows it. The two are independent by design — keeping them in step is what
+  required the polling in the first place. Clicking the waveform seeks the panel's own
+  playback only
+- **Where the host exposes no audio API, Play now runs a silent preview** — the playhead
+  sweeps the waveform against the beat grid in real time without sound — instead of
+  falling back to Premiere's transport. Manual-BPM analyses decode no audio, so they are
+  always silent; the status line says so and points at clearing the BPM field
+
 ### Fixed
+- Play at the end of a clip now replays from the start instead of doing nothing
 - The preview no longer flashes/reloads during playback. The playhead used to be drawn
   on the canvas, so moving it each tick forced a full waveform repaint, which this
   canvas shows mid-draw as a dark flicker. The playhead is now a CSS overlay that moves
@@ -69,33 +88,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change (it was being reallocated — and cleared — on every redraw)
 - `manifest.json` now reports version 0.2.0, matching `package.json`. The 0.2.0 release
   bumped only `package.json`, so Premiere kept showing the plugin as 0.1.0
-- **Premiere no longer stutters while the panel is open.** The playhead-follow loop
-  polled Premiere for its playhead position ~11×/second during playback. Every poll is
-  a round trip across the UXP↔Premiere scripting bridge onto Premiere's own thread, so
-  the panel was competing with the playback it was trying to track. It now polls twice
-  a second and derives the playhead in between from the rate measured across the last
-  two polls, on a rAF ticker that never touches the bridge — about 6× less traffic
-  during playback, and a *smoother* playhead than before (it used to advance in visible
-  90 ms steps). The idle heartbeat also backs off toward one poll every 2 s, so a panel
-  left open on a still timeline costs almost nothing. The trade-off is that playback
-  started in Premiere takes up to ~1 s to pick up, and stopping playback can overshoot
-  by ~0.3 s before the next poll corrects it
-- **The panel no longer polls Premiere at all while in-panel audio is playing.** The
-  follow loop ran at full speed during in-panel playback and discarded every result,
-  since that path drives the playhead from the audio clock — ~11 wasted round trips per
-  second at the most latency-sensitive moment
+- **Premiere no longer stutters while the panel is open.** The panel polled Premiere for
+  its playhead position ~11×/second during playback — each poll a round trip across the
+  UXP↔Premiere scripting bridge onto Premiere's own thread — and kept a slower heartbeat
+  going forever after the first analysis. Playback is now panel-local (see Changed) and
+  the polling is gone entirely, so the panel makes no periodic calls into Premiere at all
 - **The panel no longer holds the audio output device open for the whole session.** The
   `AudioContext` was created on the first waveform click and left running forever after,
   contending with Premiere's own audio output even when the panel was silent. It's now
   suspended whenever nothing is playing and resumed on play
-- **Playback stopped from Premiere is now noticed.** If the panel started playback and
-  the user stopped it in Premiere directly (space bar, program monitor), the panel never
-  found out: its button stayed on "⏸ Pause" and it kept polling at the fast cadence for
-  the rest of the session. A motionless playhead across several polls now ends it
-- Following no longer dies permanently on a single failed position read — it retries on
-  the slow heartbeat and stands down only after repeated failures
-- A forward scrub while paused no longer makes the preview playhead creep past where it
-  was dropped before snapping back
 
 ## [0.2.0] - 2026-07-22
 
