@@ -7,15 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-01
+
 ### Added
-- **In-panel audio playback** — when the host exposes Web Audio (`AudioContext`),
-  Play now sends the already-decoded PCM straight to the speakers from the panel
-  instead of driving Premiere's transport, so you hear the clip without moving the
-  timeline. CEP extensions get this for free (full embedded Chromium); UXP's
-  `<audio>` element is inert, so this feeds the decoded samples through
-  `AudioContext` instead, probed and cached like the other host APIs. If no
-  `AudioContext` is available it silently falls back to the Premiere-transport
-  behaviour. Seeking/pausing reposition the panel playback directly
+- **In-panel audio playback** — Play now plays the clip from the panel itself, so you
+  can audition against the beat grid without moving Premiere's timeline. UXP's
+  `<audio>` element is inert here (`document.createElement('audio')` returns a node
+  without even `play()`/`pause()`), which is what made panel sound look impossible;
+  its **`<video>` element is not** — Adobe's UXP reference states the video element
+  "can also play audio files". Three routes are probed in order and the working one
+  cached: Web Audio (`AudioContext`) where a host has it, otherwise a hidden video
+  element fed a temp WAV written from the already-decoded PCM, otherwise a silent
+  preview. The media-element route is reported working on macOS and **not on Windows**
+  (Premiere 26.0.2). Seeking and pausing reposition the panel's own playback
 - **Placement range** — mark only a section of a clip instead of the whole thing.
   Arm **Set In** / **Set Out** in the preview toolbar and click the waveform to set
   either boundary (either side is optional: In-only marks from there to the end,
@@ -33,97 +37,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   beat grid (and to the downbeat anchor when set). The interval is now a
   beats-per-marker value so sparser multiples and denser subdivisions share one
   generator that both the preview and Place Markers draw from, keeping them identical
-
-### Changed
-- The preview playhead now follows Premiere's playback continuously, however it was
-  started — the panel's Play button **or** pressing play / scrubbing in Premiere
-  directly. Previously it only tracked playback the panel itself started, so on
-  hosts where the transport isn't scriptable the playhead never moved. A poll mirrors
-  the sequence playhead onto the preview; its cadence is adaptive — a slow heartbeat
-  when nothing is moving, fast only while the playhead is advancing, and dormant while
-  the panel is hidden — so it doesn't burden Premiere by hammering the scripting bridge
-  when it's just sitting open, and it only repaints on an actual move
-- The preview window now scrolls to follow playback — it stays put while the playhead
-  sweeps across it and jumps forward once the playhead passes ~85% (resuming near 30%),
-  clamping in place at the clip's start/end. The playhead itself moves smoothly the
-  whole time as a CSS overlay, so following no longer repaints the waveform every frame
-- Preview toolbar polish: the zoom `+`/`−` buttons are now compact icon buttons; the
-  text mini-buttons share a consistent height and no longer wrap; and the zoom bar is
-  taller and higher-contrast (so it's easier to see) while taking less horizontal width
 - **Drag the waveform to pan** — grab anywhere on the preview and drag to slide the
   visible window (a press without movement still seeks). Makes navigating a zoomed-in
   clip far less fiddly than reaching for the zoom bar every time
-- The zoom `+`/`−` buttons now center on the playhead (when there is one), so you can
-  zoom straight in on the current position instead of on the middle of the view
-- Zoom bar is easier to grab: the thumb now has a minimum on-screen width so it stays
-  grabbable even when zoomed far into a long clip (the actual zoom is unchanged — only
-  the thumb's drawn width is floored, and its position is clamped so it never overflows
-  the bar), and the resize end-caps are restyled as Premiere-like rounded grip handles
-
-### Added
-- **In-panel audio actually plays now, via UXP's video element.** UXP's `<audio>`
-  element is inert here — `document.createElement('audio')` returns a node without even
-  `play()`/`pause()` — which is what made panel sound look impossible and sent playback
-  through Premiere's transport in the first place. Its **`<video>` element is not**:
-  Adobe's UXP reference states the video element "can also play audio files", and it
-  exposes the usual `src`/`currentTime`/`play`/`pause` surface. Play now feeds a hidden
-  video element the clip's audio and drives the playhead from that element's own clock.
-  It needs a real file rather than in-memory PCM, so the decoded samples are written
-  back out as a temp WAV — already sliced to the clip's in/out, so the element's
-  `currentTime` is clip-relative time directly. Reported working on macOS and **not on
-  Windows** (Premiere 26.0.2), so it stays probed and verified, with Web Audio preferred
-  above it where a host has it and the silent preview underneath
-- Manual-BPM analyses decode no audio, so they now play the **source file directly**,
-  offset by the clip's in-point — they were previously silent with no way to get sound
-  short of re-analyzing
 
 ### Changed
-- **Playback is now entirely in-panel and never touches Premiere.** Play used to drive
-  Premiere's sequence transport and then poll `getPlayerPosition` to mirror the sequence
-  playhead back onto the preview; every poll was a round trip across the UXP↔Premiere
-  scripting bridge onto Premiere's own thread, so auditioning a clip made the panel
-  compete with the application it was asking to play. The panel now plays the PCM it
-  already decoded during analysis through Web Audio and drives the playhead from a local
-  clock. Nothing in the playback path calls into Premiere on any cadence, so an open
-  panel costs Premiere nothing whether it's idle, playing, or paused
+- **Playback is entirely in-panel and never touches Premiere.** It previously drove
+  Premiere's sequence transport and then polled `getPlayerPosition` to mirror the
+  sequence playhead back onto the preview; every poll was a round trip across the
+  UXP↔Premiere scripting bridge onto Premiere's own thread, so auditioning a clip made
+  the panel compete with the application it was asking to play. Nothing in the playback
+  path calls into Premiere on any cadence now, so an open panel costs Premiere nothing
+  whether it's idle, playing, or paused
 - **Play and the preview playhead no longer move Premiere's playhead**, and the preview
   no longer follows it. The two are independent by design — keeping them in step is what
   required the polling in the first place. Clicking the waveform seeks the panel's own
   playback only
 - **Where a host supports none of the audio routes, Play runs a silent preview** — the
-  playhead sweeps the waveform against the beat grid in real time without sound —
-  instead of falling back to Premiere's transport. The status line says which case it
-  hit rather than silently doing nothing
+  playhead sweeps the waveform against the beat grid in real time without sound. The
+  status line says which case it hit rather than silently doing nothing. Manual-BPM
+  analyses decode no audio, so they play the source file directly, offset by the clip's
+  in-point, rather than being silent with no way to get sound short of re-analyzing
+- The preview window now scrolls to follow playback — it stays put while the playhead
+  sweeps across it and jumps forward once the playhead passes ~85% (resuming near 30%),
+  clamping in place at the clip's start/end. The playhead itself moves smoothly the
+  whole time as a CSS overlay, so following no longer repaints the waveform every frame
+- The zoom `+`/`−` buttons now center on the playhead (when there is one), so you can
+  zoom straight in on the current position instead of on the middle of the view
+- Preview toolbar polish: the zoom `+`/`−` buttons are now compact icon buttons; the
+  text mini-buttons share a consistent height and no longer wrap; and the zoom bar is
+  taller and higher-contrast (so it's easier to see) while taking less horizontal width
+- Zoom bar is easier to grab: the thumb now has a minimum on-screen width so it stays
+  grabbable even when zoomed far into a long clip (the actual zoom is unchanged — only
+  the thumb's drawn width is floored, and its position is clamped so it never overflows
+  the bar), and the resize end-caps are restyled as Premiere-like rounded grip handles
 
 ### Fixed
-- **The preview playhead moves smoothly during in-panel playback.** It was reading its
-  position straight off the media element every frame, but a media element publishes
-  `currentTime` in coarse steps rather than continuously — so the playhead lurched
-  forward a few times a second and sat still in between. It now runs off a local clock
-  and consults the element's clock four times a second purely to correct drift.
-  Corrections are asymmetric, because a stepped clock only ever *under*-reports: the
-  element reading behind the playhead is the expected steady state and is ignored,
-  while it reading ahead is a real error and is eased in. The tolerance for "behind"
-  adapts to the granularity the host actually shows, so a coarse clock can't be
-  mistaken for a stall and yanked backwards
-- Play at the end of a clip now replays from the start instead of doing nothing
+- **Premiere no longer stutters while the panel is open.** The panel polled Premiere for
+  its playhead position ~11×/second during playback — each poll a round trip across the
+  UXP↔Premiere scripting bridge onto Premiere's own thread — and kept a slower heartbeat
+  going forever after the first analysis. Playback is now panel-local (see Changed) and
+  the polling is gone entirely, so the panel makes no periodic calls into Premiere at all
+- **The preview playhead moves smoothly during in-panel playback.** It read its position
+  straight off the media element every frame, but a media element publishes `currentTime`
+  in coarse steps rather than continuously — so the playhead lurched forward a few times
+  a second and sat still in between. It now runs off a local clock and consults the
+  element's clock four times a second purely to correct drift. Corrections are
+  asymmetric, because a stepped clock only ever *under*-reports: the element reading
+  behind the playhead is the expected steady state and is ignored, while it reading ahead
+  is a real error and is eased in. The tolerance for "behind" adapts to the granularity
+  the host actually shows, so a coarse clock can't be mistaken for a stall and yanked
+  backwards
+- **The panel no longer holds the audio output device open for the whole session.** The
+  `AudioContext` was created on the first waveform click and left running forever after,
+  contending with Premiere's own audio output even when the panel was silent. It's now
+  suspended whenever nothing is playing and resumed on play
 - The preview no longer flashes/reloads during playback. The playhead used to be drawn
   on the canvas, so moving it each tick forced a full waveform repaint, which this
   canvas shows mid-draw as a dark flicker. The playhead is now a CSS overlay that moves
   without touching the canvas, and the waveform is repainted only when the window
   actually scrolls. The canvas backing store is also resized only when its dimensions
   change (it was being reallocated — and cleared — on every redraw)
-- `manifest.json` now reports version 0.2.0, matching `package.json`. The 0.2.0 release
-  bumped only `package.json`, so Premiere kept showing the plugin as 0.1.0
-- **Premiere no longer stutters while the panel is open.** The panel polled Premiere for
-  its playhead position ~11×/second during playback — each poll a round trip across the
-  UXP↔Premiere scripting bridge onto Premiere's own thread — and kept a slower heartbeat
-  going forever after the first analysis. Playback is now panel-local (see Changed) and
-  the polling is gone entirely, so the panel makes no periodic calls into Premiere at all
-- **The panel no longer holds the audio output device open for the whole session.** The
-  `AudioContext` was created on the first waveform click and left running forever after,
-  contending with Premiere's own audio output even when the panel was silent. It's now
-  suspended whenever nothing is playing and resumed on play
+- Play at the end of a clip now replays from the start instead of doing nothing
+- The plugin version shown in Premiere is correct again. The 0.2.0 release bumped only
+  `package.json` and not `manifest.json`, so 0.2.0 identified itself as 0.1.0; CI now
+  fails when the two disagree
 
 ## [0.2.0] - 2026-07-22
 
@@ -259,6 +237,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Status/log area showing detected BPM and marker count
 - Automatic cleanup of temporary WAV files
 
-[Unreleased]: https://github.com/YOUR_ORG/beat-marker/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/YOUR_ORG/beat-marker/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/YOUR_ORG/beat-marker/releases/tag/v0.1.0
+[Unreleased]: https://github.com/BereZone/Mark-the-Beats/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/BereZone/Mark-the-Beats/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/BereZone/Mark-the-Beats/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/BereZone/Mark-the-Beats/releases/tag/v0.1.0

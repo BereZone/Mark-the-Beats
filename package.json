@@ -1,6 +1,6 @@
 {
   "name": "beat-marker",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "UXP plugin for Adobe Premiere Pro that detects beats in audio and places timeline markers",
   "main": "src/main.js",
   "scripts": {
@@ -8,6 +8,12 @@
     "validate": "node -e \"require('./beatDetector.js'); require('./wavParser.js'); require('./mp3Parser.js'); console.log('Modules OK')\"",
     "test": "echo 'No automated tests yet — see docs/development.md for manual testing steps'"
   },
-  "keywords": ["premiere-pro", "uxp", "beat-detection", "audio", "markers"],
+  "keywords": [
+    "premiere-pro",
+    "uxp",
+    "beat-detection",
+    "audio",
+    "markers"
+  ],
   "license": "MIT"
 }
