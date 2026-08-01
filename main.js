@@ -1,4 +1,5 @@
 var parseWav    = require('./wavParser.js').parseWav;
+var encodeWav   = require('./wavParser.js').encodeWav;
 var parseMp3    = require('./mp3Parser.js').parseMp3;
 var detectBeats = require('./beatDetector.js').detectBeats;
 var ppro        = require('premierepro');
@@ -145,6 +146,13 @@ async function runAnalyze() {
       if (ip && ip.ticks) sourceStart = ticksToSeconds(ip.ticks);
     } catch (_) {}
 
+    // Resolved here rather than at Play time so playback never has to call into
+    // Premiere. Only the manual-BPM path actually uses it (it decodes no audio, so
+    // the source file is the only thing left to play), but it costs one call either
+    // way and analysis is already the place that talks to the host.
+    var mediaPath = null;
+    try { mediaPath = await getClipMediaPath(clipInfo); } catch (_) {}
+
     var manualBpm = parseFloat(document.getElementById('manualBpm').value);
     var bpm, allBeats, duration, waveform = null, detected = null;
 
@@ -176,7 +184,7 @@ async function runAnalyze() {
     // it by applyGrid, re-phased through the downbeat anchor when one is set.
     analysis = {
       clipInfo: clipInfo, sequence: sequence, project: project,
-      sourceStart: sourceStart, duration: duration,
+      sourceStart: sourceStart, duration: duration, mediaPath: mediaPath,
       bpm: bpm, naturalBeats: allBeats, allBeats: allBeats,
       anchor: null, rangeStart: null, rangeEnd: null,
       detected: detected, waveform: waveform
@@ -659,26 +667,25 @@ var playheadPollHandle = null; // rAF (or setTimeout fallback) handle while the 
 var _audioCtx = null;
 var _audioCtxProbed = false;
 
-// The panel's transport. `silent` marks a run with no audio behind it, where the
-// position comes from the wall clock instead of the audio clock — the only thing
-// that differs between the two, so nothing downstream has to branch on it.
-var transport = { playing: false, silent: false, startOffset: 0, startClock: 0 };
+// The panel's transport. `mode` names which of the three routes below is driving
+// this run, which is also what decides where the playhead's time comes from.
+var transport = { playing: false, mode: 'silent', startOffset: 0, startClock: 0 };
 
 // Live Web Audio playback: the running BufferSource, plus the AudioBuffer built
 // once per analysis from the decoded PCM.
 var webAudio = { source: null, buffer: null, bufferFor: null };
 
-// Seconds, from whichever clock is driving the current run. The audio clock is
-// preferred when there is real audio: it is the one the speakers actually follow,
-// so the playhead can't drift from what's being heard.
-function transportClockSec() {
-  if (!transport.silent && _audioCtx) return _audioCtx.currentTime;
-  return Date.now() / 1000;
-}
-
+// Clip-relative seconds. Each route reports from the clock closest to the sound it
+// is actually making, so the playhead tracks what's heard rather than what was
+// scheduled: the media element's own currentTime, the audio context's clock, or —
+// with nothing playing — the wall clock.
 function playbackPositionSec() {
   if (!transport.playing) return previewPlayheadRel != null ? previewPlayheadRel : 0;
-  return transport.startOffset + (transportClockSec() - transport.startClock);
+  if (transport.mode === 'media' && _mediaEl) return _mediaEl.currentTime - media.offset;
+  if (transport.mode === 'webaudio' && _audioCtx) {
+    return transport.startOffset + (_audioCtx.currentTime - transport.startClock);
+  }
+  return transport.startOffset + (Date.now() / 1000 - transport.startClock);
 }
 
 function getAudioContext() {
@@ -695,6 +702,143 @@ function getAudioContext() {
   // long before anything plays — so park it immediately and let playback resume it.
   suspendAudioContext();
   return _audioCtx;
+}
+
+// ── Route 2: UXP's media element ────────────────────────────────────────────
+//
+// UXP's <audio> element is inert — createElement('audio') returns a node without
+// play()/pause() — which is what made in-panel sound look impossible. Its <video>
+// element is not: Adobe's UXP reference states the video element "can also play
+// audio files", and it exposes the HTMLMediaElement surface (src, currentTime,
+// play/pause, loadeddata/ended/seeked). A hidden video element pointed at an audio
+// file is therefore the working route to sound from a UXP panel. It is reported
+// working on macOS and NOT on Windows (Premiere 26.0.2), so it stays probed and
+// verified rather than assumed, with the silent preview underneath it.
+//
+// The element needs a real file, not the in-memory PCM, so the decoded samples are
+// written back out as a temp WAV — already sliced to the clip's in/out, so the
+// element's currentTime is clip-relative time directly. Analyses that decoded no
+// audio (manual BPM) point at the original media file instead and carry the clip's
+// in-point as an offset.
+
+var _mediaEl = null, _mediaProbed = false;
+var _mediaSrcForm = null;                 // index of the src spelling this host accepted
+var media = { loadedFor: null, offset: 0, src: null };
+
+// Not display:none — a media element removed from layout is at the mercy of the
+// engine's "is this visible" heuristics for whether it decodes at all. A 1px
+// transparent element is unambiguously live and equally invisible.
+function getMediaElement() {
+  if (_mediaProbed) return _mediaEl;
+  _mediaProbed = true;
+  try {
+    var el = document.createElement('video');
+    if (!el || typeof el.play !== 'function' || typeof el.pause !== 'function') {
+      console.log('[BM] this host\'s media element has no play()/pause() — no in-panel audio route');
+      return null;
+    }
+    el.setAttribute('preload', 'auto');
+    var s = el.style;
+    s.position = 'absolute'; s.left = '0'; s.bottom = '0';
+    s.width = '1px'; s.height = '1px'; s.opacity = '0'; s.pointerEvents = 'none';
+    (document.body || document.documentElement).appendChild(el);
+    _mediaEl = el;
+    console.log('[BM] media element available — probing it for audio playback');
+  } catch (e) {
+    console.log('[BM] media element unavailable:', e && e.message);
+    _mediaEl = null;
+  }
+  return _mediaEl;
+}
+
+// Absolute path -> the URL spellings worth trying, in order. Which one a UXP build
+// accepts for media isn't documented (the storage API takes file://, but that's a
+// different subsystem), so each is tried once and the winner is cached.
+function mediaSrcCandidates(nativePath) {
+  return ['file://' + nativePath, 'file://' + encodeURI(nativePath), nativePath];
+}
+
+// Resolves once the element has actually accepted the source. "No exception from
+// play()" has already proved a false signal elsewhere in this file, so this waits
+// for a real readiness event and treats silence as failure.
+function loadMediaSrc(el, url) {
+  return new Promise(function (resolve) {
+    var settled = false;
+    function done(ok) {
+      if (settled) return;
+      settled = true;
+      el.removeEventListener('loadeddata', onOk);
+      el.removeEventListener('loadedmetadata', onOk);
+      el.removeEventListener('canplay', onOk);
+      el.removeEventListener('error', onErr);
+      resolve(ok);
+    }
+    function onOk()  { done(true); }
+    function onErr() { done(false); }
+    el.addEventListener('loadeddata', onOk);
+    el.addEventListener('loadedmetadata', onOk);
+    el.addEventListener('canplay', onOk);
+    el.addEventListener('error', onErr);
+    setTimeout(function () { done(false); }, MEDIA_LOAD_TIMEOUT_MS);
+    try {
+      el.src = url;
+      if (typeof el.load === 'function') el.load();
+    } catch (e) {
+      console.log('[BM] setting media src threw:', e && e.message);
+      done(false);
+    }
+  });
+}
+
+var MEDIA_LOAD_TIMEOUT_MS = 4000;
+var PREVIEW_WAV_NAME = 'beatmarker-preview.wav';
+
+// Writes the decoded PCM to a temp WAV and returns its absolute path. One file,
+// overwritten per analysis, so this can't accumulate.
+async function writePreviewWav() {
+  var wf = analysis.waveform;
+  var buffer = encodeWav(wf.samples, wf.sampleRate);
+  var folder = await localFs.getTemporaryFolder();
+  var entry  = await folder.createEntry(PREVIEW_WAV_NAME, { overwrite: true });
+  await entry.write(buffer, { format: formats.binary });
+  return entry.nativePath;
+}
+
+// Points the media element at something playable for the current analysis and
+// caches it. Returns true when the element is loaded and ready.
+async function prepareMedia(el) {
+  if (media.loadedFor === analysis && media.src) return true;
+
+  var path, offset;
+  if (analysis.waveform && analysis.waveform.samples && analysis.waveform.samples.length) {
+    log('Preparing audio for playback…', 'info');
+    try { path = await writePreviewWav(); }
+    catch (e) { console.log('[BM] could not write the preview WAV:', e && e.message); return false; }
+    offset = 0;
+  } else if (analysis.mediaPath) {
+    // Manual-BPM analyses decode nothing, so play the source file and shift by the
+    // clip's in-point to keep the element's clock clip-relative like the WAV's.
+    path = analysis.mediaPath;
+    offset = analysis.sourceStart || 0;
+  } else {
+    return false;
+  }
+
+  var candidates = _mediaSrcForm !== null ? [mediaSrcCandidates(path)[_mediaSrcForm]] : mediaSrcCandidates(path);
+  for (var i = 0; i < candidates.length; i++) {
+    var ok = await loadMediaSrc(el, candidates[i]);
+    if (!ok) continue;
+    if (_mediaSrcForm === null) {
+      _mediaSrcForm = i;
+      console.log('[BM] media src form #' + i + ' accepted: ' + candidates[i]);
+    }
+    media.loadedFor = analysis;
+    media.offset = offset;
+    media.src = candidates[i];
+    return true;
+  }
+  console.log('[BM] no media src form loaded — falling back to a silent preview');
+  return false;
 }
 
 // Builds (and caches per analysis) an AudioBuffer from the decoded PCM. The
@@ -738,28 +882,36 @@ function suspendAudioContext() {
   }
 }
 
+function pauseMediaElement() {
+  if (_mediaEl) { try { _mediaEl.pause(); } catch (_) {} }
+}
+
 // The single way playback stops. Leaves previewPlayheadRel wherever it was, so
 // pausing and playing again resumes from the same spot.
 function stopPlayback() {
   stopPlayheadPoll();
   stopSourceOnly();
   suspendAudioContext();
+  pauseMediaElement();
   transport.playing = false;
   var btn = document.getElementById('playBtn');
   if (btn) btn.textContent = '▶ Play';
 }
 
-// Starts (or restarts) playback at offsetSec, clip-relative. Returns 'audio' when
-// real sound is coming out, 'silent' when the host gave us no way to make any and
-// this is a visual-only run. Never returns a failure the caller has to route
-// around — a silent preview is always available.
+// Starts (or restarts) playback at offsetSec, clip-relative. Returns the route that
+// actually produced sound — 'webaudio', 'media', or 'silent' for a visual-only run.
+// Never fails in a way the caller has to route around: the silent preview always
+// works, so Play always does something.
 async function startPlayback(offsetSec) {
   var off = clampNum(offsetSec, 0, analysis.duration);
+
+  // Route 1: Web Audio. Sample-accurate and needs no temp file, so it wins when
+  // the host has it — which most UXP builds do not.
   var ctx = (analysis.waveform && analysis.waveform.samples) ? getAudioContext() : null;
   var buffer = ctx ? getPlaybackBuffer(ctx) : null;
-
   if (ctx && buffer) {
     stopSourceOnly();
+    pauseMediaElement();
     try { if (ctx.state === 'suspended' && typeof ctx.resume === 'function') await ctx.resume(); } catch (_) {}
     var src;
     try {
@@ -768,24 +920,49 @@ async function startPlayback(offsetSec) {
       src.connect(ctx.destination);
       src.start(0, off);
     } catch (e) {
-      console.log('[BM] in-panel start failed — falling back to a silent preview:', e && e.message);
+      console.log('[BM] Web Audio start failed — trying the media element:', e && e.message);
       suspendAudioContext();
       src = null;
     }
     if (src) {
       webAudio.source = src;
-      transport.silent = false;
+      transport.mode = 'webaudio';
       transport.startClock = ctx.currentTime;
       transport.startOffset = off;
       transport.playing = true;
       startTransportPoll();
-      return 'audio';
+      return 'webaudio';
     }
   }
 
+  // Route 2: the media element.
+  var el = getMediaElement();
+  if (el && await prepareMedia(el)) {
+    stopSourceOnly();
+    suspendAudioContext();
+    var started = false;
+    try {
+      el.currentTime = off + media.offset;
+      var p = el.play();
+      if (p && typeof p.then === 'function') await p;
+      started = true;
+    } catch (e) {
+      console.log('[BM] media element play() failed — falling back to a silent preview:', e && e.message);
+    }
+    if (started) {
+      transport.mode = 'media';
+      transport.startOffset = off;
+      transport.playing = true;
+      startTransportPoll();
+      return 'media';
+    }
+  }
+
+  // Route 3: no sound available anywhere — run the playhead off the wall clock.
   stopSourceOnly();
   suspendAudioContext();
-  transport.silent = true;
+  pauseMediaElement();
+  transport.mode = 'silent';
   transport.startClock = Date.now() / 1000;
   transport.startOffset = off;
   transport.playing = true;
@@ -801,8 +978,13 @@ function startTransportPoll() {
   function tick() {
     if (!transport.playing || !analysis) { playheadPollHandle = null; return; }
     var rel = playbackPositionSec();
-    if (rel >= analysis.duration) {
-      previewPlayheadRel = analysis.duration;
+    // The media element can run out before the clip does — a source file shorter
+    // than the clip's in-point plus duration. Its clock then freezes short of the
+    // end, so without this the transport would sit "playing" forever on a stalled
+    // playhead. Its own ended flag is the authority on that.
+    var ranOut = transport.mode === 'media' && _mediaEl && _mediaEl.ended;
+    if (rel >= analysis.duration || ranOut) {
+      previewPlayheadRel = ranOut ? clampNum(rel, 0, analysis.duration) : analysis.duration;
       stopPlayback();
       redrawPreview();
       return;
@@ -904,15 +1086,16 @@ async function togglePlayback() {
 
   previewPlayheadRel = jumpRel;
   playBtn.textContent = '⏸ Pause';
-  if (mode === 'audio') {
+  if (mode === 'webaudio' || mode === 'media') {
     log('Playing in the panel from ' + jumpRel.toFixed(1) + 's.', 'info');
-  } else if (!analysis.waveform || !analysis.waveform.samples) {
-    // The two silent cases have different fixes, so they get different messages.
-    log('Playing a silent preview from ' + jumpRel.toFixed(1) + 's — this analysis used a manual BPM, ' +
-        'so no audio was decoded to play. Clear the BPM field and re-analyze to get sound.', 'info');
+  } else if (!analysis.waveform && !analysis.mediaPath) {
+    // The silent cases have different causes and different fixes, so they say so.
+    log('Playing a silent preview from ' + jumpRel.toFixed(1) + 's — this analysis used a manual BPM ' +
+        'and the source file couldn\'t be located, so there is nothing to play. Clear the BPM field ' +
+        'and re-analyze to get sound.', 'info');
   } else {
-    log('Playing a silent preview from ' + jumpRel.toFixed(1) + 's — this host exposes no audio API ' +
-        'to the panel, so the playhead sweeps the beat grid without sound.', 'info');
+    log('Playing a silent preview from ' + jumpRel.toFixed(1) + 's — this host gave the panel no way ' +
+        'to play audio, so the playhead sweeps the beat grid without sound.', 'info');
   }
 }
 
@@ -1213,6 +1396,12 @@ async function findSelectedInTrack(track) {
 }
 
 // ── Audio loading ─────────────────────────────────────────────────────────────
+
+async function getClipMediaPath(clipInfo) {
+  var pi = await clipInfo.trackItem.getProjectItem();
+  var clipItem = ppro.ClipProjectItem.queryCast(pi) || ppro.ClipProjectItem.cast(pi);
+  return clipItem ? await clipItem.getMediaFilePath() : null;
+}
 
 async function loadClipAudio(clipInfo) {
   var trackItem = clipInfo.trackItem;

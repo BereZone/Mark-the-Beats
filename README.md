@@ -53,16 +53,23 @@ Ensure **Adobe Media Encoder** is installed — it handles the audio export step
 
 ## Known limitations
 
-- Playback is entirely panel-local and never touches Premiere. Audible playback
-  depends on the host exposing Web Audio (`AudioContext`), which is probed and
-  verified rather than assumed. CEP extensions always have it (they run a full
-  embedded Chromium); UXP's webview here has an inert `<audio>` element
-  (`document.createElement('audio')` returns a node without even `play()`/`pause()`),
-  so Web Audio is the only route to in-panel sound. Where it's missing, Play runs a
-  **silent preview** — the playhead sweeps the waveform against the beat grid in
-  real time, with no sound. Manual-BPM analyses skip the decode step entirely, so
-  they have no PCM to play and are always silent; clear the BPM field and
-  re-analyze if you want to hear the clip.
+- Playback is entirely panel-local and never touches Premiere. Sound comes from
+  whichever of these the host supports, probed in order and verified rather than
+  assumed:
+  1. **Web Audio** (`AudioContext`) — sample-accurate and needs no temp file. CEP
+     extensions always have it; most UXP builds don't.
+  2. **UXP's media element** — UXP's `<audio>` element is inert
+     (`document.createElement('audio')` returns a node without even
+     `play()`/`pause()`), which is what made in-panel sound look impossible, but its
+     `<video>` element is not: Adobe's UXP reference states it "can also play audio
+     files". A hidden video element pointed at an audio file is the working route.
+     It needs a real file, so the decoded PCM is written back out as a temp WAV.
+     **Reported working on macOS and not on Windows** (Premiere 26.0.2).
+  3. **Silent preview** — the playhead still sweeps the waveform against the beat
+     grid in real time, without sound.
+
+  Manual-BPM analyses skip the decode step, so there's no PCM to write; they play the
+  source file directly instead, offset by the clip's in-point.
 - The panel does not follow Premiere's playhead, and Play does not move it. The two
   playheads are independent by design: mirroring them meant polling Premiere across
   the UXP scripting bridge many times a second, which is what previously made

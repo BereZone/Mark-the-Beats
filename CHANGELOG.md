@@ -60,6 +60,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the thumb's drawn width is floored, and its position is clamped so it never overflows
   the bar), and the resize end-caps are restyled as Premiere-like rounded grip handles
 
+### Added
+- **In-panel audio actually plays now, via UXP's video element.** UXP's `<audio>`
+  element is inert here — `document.createElement('audio')` returns a node without even
+  `play()`/`pause()` — which is what made panel sound look impossible and sent playback
+  through Premiere's transport in the first place. Its **`<video>` element is not**:
+  Adobe's UXP reference states the video element "can also play audio files", and it
+  exposes the usual `src`/`currentTime`/`play`/`pause` surface. Play now feeds a hidden
+  video element the clip's audio and drives the playhead from that element's own clock.
+  It needs a real file rather than in-memory PCM, so the decoded samples are written
+  back out as a temp WAV — already sliced to the clip's in/out, so the element's
+  `currentTime` is clip-relative time directly. Reported working on macOS and **not on
+  Windows** (Premiere 26.0.2), so it stays probed and verified, with Web Audio preferred
+  above it where a host has it and the silent preview underneath
+- Manual-BPM analyses decode no audio, so they now play the **source file directly**,
+  offset by the clip's in-point — they were previously silent with no way to get sound
+  short of re-analyzing
+
 ### Changed
 - **Playback is now entirely in-panel and never touches Premiere.** Play used to drive
   Premiere's sequence transport and then poll `getPlayerPosition` to mirror the sequence
@@ -73,10 +90,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer follows it. The two are independent by design — keeping them in step is what
   required the polling in the first place. Clicking the waveform seeks the panel's own
   playback only
-- **Where the host exposes no audio API, Play now runs a silent preview** — the playhead
-  sweeps the waveform against the beat grid in real time without sound — instead of
-  falling back to Premiere's transport. Manual-BPM analyses decode no audio, so they are
-  always silent; the status line says so and points at clearing the BPM field
+- **Where a host supports none of the audio routes, Play runs a silent preview** — the
+  playhead sweeps the waveform against the beat grid in real time without sound —
+  instead of falling back to Premiere's transport. The status line says which case it
+  hit rather than silently doing nothing
 
 ### Fixed
 - Play at the end of a clip now replays from the start instead of doing nothing

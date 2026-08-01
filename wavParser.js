@@ -76,4 +76,49 @@ function readSample(view, pos, bits, audioFormat) {
   }
 }
 
-module.exports = { parseWav: parseWav };
+// Mono 16-bit PCM WAV from normalized float samples. Playback in the panel goes
+// through a media element, which needs a real file rather than the in-memory PCM,
+// so the decoded samples are written back out in the one format every decoder
+// handles. 16-bit is deliberate: it halves the temp file against 32-bit float for
+// no audible loss on a preview, and float WAV support is the less universal path.
+function encodeWav(samples, sampleRate) {
+  var frames   = samples.length;
+  var dataSize = frames * 2;
+  var buffer   = new ArrayBuffer(44 + dataSize);
+  var view     = new DataView(buffer);
+
+  writeFourCC(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeFourCC(view, 8, 'WAVE');
+
+  writeFourCC(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);                 // fmt chunk size
+  view.setUint16(20, 1, true);                  // PCM
+  view.setUint16(22, 1, true);                  // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);     // byte rate
+  view.setUint16(32, 2, true);                  // block align
+  view.setUint16(34, 16, true);                 // bits per sample
+
+  writeFourCC(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  for (var i = 0; i < frames; i++) {
+    var s = samples[i];
+    if (s > 1) s = 1; else if (s < -1) s = -1;
+    // Scale by 32768 to pair exactly with readSample's /32768, so the round trip
+    // costs only the rounding step. setInt16 truncates a fractional value toward
+    // zero, which would double the error, hence the explicit round. +1.0 is the
+    // one value int16 can't hold and is clamped to the positive maximum.
+    var v = Math.round(s * 0x8000);
+    if (v > 0x7FFF) v = 0x7FFF;
+    view.setInt16(44 + i * 2, v, true);
+  }
+  return buffer;
+}
+
+function writeFourCC(view, offset, str) {
+  for (var i = 0; i < 4; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+module.exports = { parseWav: parseWav, encodeWav: encodeWav };
