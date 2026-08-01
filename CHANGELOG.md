@@ -96,6 +96,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hit rather than silently doing nothing
 
 ### Fixed
+- **The preview playhead moves smoothly during in-panel playback.** It was reading its
+  position straight off the media element every frame, but a media element publishes
+  `currentTime` in coarse steps rather than continuously — so the playhead lurched
+  forward a few times a second and sat still in between. It now runs off a local clock
+  and consults the element's clock four times a second purely to correct drift.
+  Corrections are asymmetric, because a stepped clock only ever *under*-reports: the
+  element reading behind the playhead is the expected steady state and is ignored,
+  while it reading ahead is a real error and is eased in. The tolerance for "behind"
+  adapts to the granularity the host actually shows, so a coarse clock can't be
+  mistaken for a stall and yanked backwards
 - Play at the end of a clip now replays from the start instead of doing nothing
 - The preview no longer flashes/reloads during playback. The playhead used to be drawn
   on the canvas, so moving it each tick forced a full waveform repaint, which this

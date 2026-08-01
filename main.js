@@ -501,24 +501,42 @@ function drawWaveformPreview(waveform, durationSec, beatsSec, colorIndex, win, p
 
 // Positions the playhead overlay for the current window; hides it when there's no
 // playhead or it's scrolled out of view. Pure CSS, so it's safe to call every tick.
+// Runs every animation frame during playback, so it avoids the two things that are
+// expensive here: looking the element up again, and writing a style that isn't
+// actually changing (each write costs a host round trip and dirties layout).
+var _playheadEl = null;
+var _playheadLeft = null;   // last value written, to skip no-op writes
+var _playheadShown = null;
+
+function playheadElement() {
+  if (!_playheadEl) _playheadEl = document.getElementById('previewPlayhead');
+  return _playheadEl;
+}
+
+function setPlayheadShown(el, shown) {
+  if (_playheadShown === shown) return;
+  el.style.display = shown ? 'block' : 'none';
+  _playheadShown = shown;
+}
+
 function updatePlayheadOverlay() {
-  var el = document.getElementById('previewPlayhead');
+  var el = playheadElement();
   if (!el) return;
-  if (previewPlayheadRel == null || !previewWindow || !(previewWindow.len > 0)) {
-    el.style.display = 'none';
-    return;
-  }
-  var frac = (previewPlayheadRel - previewWindow.start) / previewWindow.len;
-  if (frac < 0 || frac > 1) { el.style.display = 'none'; return; }
-  el.style.left = (frac * 100) + '%';
-  el.style.display = 'block';
+  var visible = previewPlayheadRel != null && previewWindow && previewWindow.len > 0;
+  var frac = visible ? (previewPlayheadRel - previewWindow.start) / previewWindow.len : 0;
+  if (!visible || frac < 0 || frac > 1) { setPlayheadShown(el, false); return; }
+  // Quantized to 0.01% — finer than a pixel at any panel width this docks to, so
+  // this only ever skips writes that wouldn't have moved the playhead on screen.
+  var left = (Math.round(frac * 1000000) / 10000) + '%';
+  if (left !== _playheadLeft) { el.style.left = left; _playheadLeft = left; }
+  setPlayheadShown(el, true);
 }
 
 function showPreviewMessage(msg) {
   var info = document.getElementById('previewInfo');
   if (info) info.textContent = msg;
-  var ph = document.getElementById('previewPlayhead');
-  if (ph) ph.style.display = 'none';
+  var ph = playheadElement();
+  if (ph) setPlayheadShown(ph, false);
   var canvas = document.getElementById('previewCanvas');
   if (!canvas) return;
   var cssWidth  = canvas.clientWidth  || 280;
@@ -675,13 +693,89 @@ var transport = { playing: false, mode: 'silent', startOffset: 0, startClock: 0 
 // once per analysis from the decoded PCM.
 var webAudio = { source: null, buffer: null, bufferFor: null };
 
+// A media element reports currentTime in coarse steps — commonly updated only a
+// few times a second rather than continuously — so reading it every frame gives a
+// playhead that lurches forward a few times a second and sits still in between.
+// Reading it is also a call into the host's media layer, on the same thread that
+// feeds the speakers.
+//
+// So the playhead runs off the wall clock, which is smooth and free, and the
+// element's clock is consulted a few times a second only to correct drift. A large
+// disagreement means something real happened (a seek, a stall) and is taken at
+// once; a small one is eased in over subsequent frames, which keeps the playhead
+// continuous while staying locked to the audio. Playback is always 1×, so between
+// corrections wall time and media time advance together.
+// Corrections are deliberately asymmetric. A quantized clock only ever *under*
+// reports — it floors to the last step it published — so "the element says we're
+// behind where I think we are" is the expected steady state and must not be
+// chased, or the playhead settles a step behind the sound it's marking. "The
+// element says we're ahead" cannot be explained by quantization, so that error is
+// real and gets eased in. Either direction past the snap threshold is a genuine
+// stall or seek and is taken at once.
+var MEDIA_SYNC_MS    = 250;   // how often the element's own clock is consulted
+var MEDIA_SNAP_SEC   = 0.5;   // past this, correct immediately rather than easing
+var MEDIA_CORRECTION = 0.25;  // fraction of a real (ahead-of-us) error absorbed per sync
+
+var _mediaPos      = 0;  // predicted clip-relative position as of _mediaWall
+var _mediaWall     = 0;
+var _mediaLastSync = 0;
+var _mediaEnded    = false;
+
+// How coarsely this host's clock actually moves, learned from the gaps between
+// distinct readings. It sets how far "behind" the element may legitimately read
+// before that counts as a real stall rather than quantization. Until a gap has
+// actually been observed it stays null and backward corrections are suppressed
+// entirely — guessing a seed here would false-snap on any host coarser than the
+// guess, and briefly running ahead of a stall is much cheaper than a visible jump
+// on every host. It only grows once learned: it's a property of the host, not of
+// a clip, so it survives seeks and re-analyses.
+var MEDIA_STEP_FLOOR = 0.5;
+var MEDIA_STEP_MAX   = 3;
+var _mediaStep = null;
+var _mediaLastActual = null;
+
+function anchorMediaClock(posSec) {
+  _mediaPos = posSec;
+  _mediaWall = Date.now();
+  _mediaLastSync = _mediaWall;
+  _mediaLastActual = null;
+  _mediaEnded = false;
+}
+
+function mediaPositionSec() {
+  var nowMs = Date.now();
+  var predicted = _mediaPos + (nowMs - _mediaWall) / 1000;
+  if (nowMs - _mediaLastSync >= MEDIA_SYNC_MS) {
+    var actual = _mediaEl.currentTime - media.offset;
+    _mediaEnded = !!_mediaEl.ended;
+
+    if (_mediaLastActual != null && actual > _mediaLastActual) {
+      var gap = Math.max(MEDIA_STEP_FLOOR, actual - _mediaLastActual);
+      _mediaStep = Math.min(MEDIA_STEP_MAX, Math.max(_mediaStep || 0, gap));
+    }
+    _mediaLastActual = actual;
+
+    var error = actual - predicted;
+    if (error > MEDIA_SNAP_SEC) predicted = actual;   // really ahead: seeked somewhere else
+    else if (error > 0)         predicted += error * MEDIA_CORRECTION;
+    else if (_mediaStep != null && -error > MEDIA_SNAP_SEC + _mediaStep) {
+      predicted = actual;                             // behind beyond quantization: stalled
+    }
+
+    _mediaPos = predicted;
+    _mediaWall = nowMs;
+    _mediaLastSync = nowMs;
+  }
+  return predicted;
+}
+
 // Clip-relative seconds. Each route reports from the clock closest to the sound it
 // is actually making, so the playhead tracks what's heard rather than what was
 // scheduled: the media element's own currentTime, the audio context's clock, or —
 // with nothing playing — the wall clock.
 function playbackPositionSec() {
   if (!transport.playing) return previewPlayheadRel != null ? previewPlayheadRel : 0;
-  if (transport.mode === 'media' && _mediaEl) return _mediaEl.currentTime - media.offset;
+  if (transport.mode === 'media' && _mediaEl) return mediaPositionSec();
   if (transport.mode === 'webaudio' && _audioCtx) {
     return transport.startOffset + (_audioCtx.currentTime - transport.startClock);
   }
@@ -950,6 +1044,9 @@ async function startPlayback(offsetSec) {
       console.log('[BM] media element play() failed — falling back to a silent preview:', e && e.message);
     }
     if (started) {
+      // Anchor the smoothed clock at the position we just asked for, so the first
+      // frames run from that rather than waiting on the element's coarse clock.
+      anchorMediaClock(off);
       transport.mode = 'media';
       transport.startOffset = off;
       transport.playing = true;
@@ -982,7 +1079,7 @@ function startTransportPoll() {
     // than the clip's in-point plus duration. Its clock then freezes short of the
     // end, so without this the transport would sit "playing" forever on a stalled
     // playhead. Its own ended flag is the authority on that.
-    var ranOut = transport.mode === 'media' && _mediaEl && _mediaEl.ended;
+    var ranOut = transport.mode === 'media' && _mediaEnded;
     if (rel >= analysis.duration || ranOut) {
       previewPlayheadRel = ranOut ? clampNum(rel, 0, analysis.duration) : analysis.duration;
       stopPlayback();
